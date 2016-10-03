@@ -341,19 +341,22 @@ static inline int pblk_valid_meta_ppa(struct pblk *pblk,
 	ppa_opt = addr_to_gen_ppa(pblk, paddr + data_line->meta_distance, 0);
 	if (unlikely(ppa_opt.ppa == ppa.ppa) || 
 	    unlikely((data_line->meta_distance % pblk->rail.stride_width) == 0)) {
-		data_line->meta_distance--;
+		data_line->meta_distance -=3;
 		return 0;
 	}
 
 	for (i = 0; i < nr_ppas; i += pblk->min_write_pgs)
 		if (ppa_list[i].g.ch == ppa_opt.g.ch &&
-					ppa_list[i].g.lun == ppa_opt.g.lun)
+		    ppa_list[i].g.lun == ppa_opt.g.lun) {
 			return 1;
+		}
 
 	if (test_bit(pblk_ppa_to_pos(geo, ppa_opt), data_line->blk_bitmap)) {
+		//TODO: FIXME, can we do this?
+		return 0;
 		for (i = 0; i < nr_ppas; i += pblk->min_write_pgs)
 			if (ppa_list[i].g.ch == ppa.g.ch &&
-						ppa_list[i].g.lun == ppa.g.lun)
+			    ppa_list[i].g.lun == ppa.g.lun)
 				return 0;
 
 		return 1;
@@ -469,7 +472,7 @@ retry:
 
 	if (!pblk_valid_meta_ppa(pblk, meta_line, prev_list, prev_n))
 		return 0;
-	
+
 	return pblk_submit_meta_io(pblk, meta_line);
 }
 

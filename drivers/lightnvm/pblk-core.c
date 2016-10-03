@@ -632,7 +632,6 @@ next_rq:
 					addr_to_gen_ppa(pblk, paddr, id);
 			}
 		}
-		printk(KERN_EMERG "emeta nr %i\n", rqd.nr_ppas);
 		pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas);
 	} else {
 		for (i = 0; i < rqd.nr_ppas; ) {
@@ -1041,7 +1040,7 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	int nr_bb = 0;
 	u64 off;
 	int bit = -1;
-	
+
 	line->sec_in_line = lm->sec_per_line;
 
 	/* Capture bad block information on line mapping bitmaps */
@@ -1059,6 +1058,17 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	}
 
 	/* Mark smeta metadata sectors as bad sectors */
+	off = 0;
+	while (1) {
+		if(!test_bit(off, line->map_bitmap))
+			break;
+
+		/* Track bad blocks for later RAIL parity computation */
+		pblk_rail_track_sec(pblk, off, 0, 0);
+
+		off += pblk->min_write_pgs;
+	}
+
 	bit = find_first_zero_bit(line->blk_bitmap, lm->blk_per_line);
 	off = bit * geo->sec_per_pl;
 	bitmap_set(line->map_bitmap, off, lm->smeta_sec);
@@ -1115,8 +1125,6 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 		
 		list_add_tail(&line->list, &l_mg->bad_list);
 		pr_err("pblk: unexpected line %d is bad\n", line->id);
-		printk(KERN_EMERG "sec %i lin %i weight %i parity %i\n", lm->sec_per_line , line->sec_in_line ,
-	    bitmap_weight(line->invalid_bitmap, lm->sec_per_line), line->rail_parity_secs);
 
 		return 0;
 	}
@@ -1607,7 +1615,8 @@ void pblk_line_close(struct pblk *pblk, struct pblk_line *line)
 	WARN(!bitmap_full(line->map_bitmap, lm->sec_per_line),
 				"pblk: corrupt closed line %d\n", line->id);
 	WARN(line->rail_parity_secs, 
-	     "pblk: closed line has unwritten parity sectors %d\n", line->rail_parity_secs);
+	     "pblk: closed line: %p parity sector mismatch %d\n",
+	     line, line->rail_parity_secs);
 #endif
 
 	spin_lock(&l_mg->free_lock);
@@ -1727,6 +1736,7 @@ static void __pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list,
 		WARN_ON(ppa_list[0].g.lun != ppa_list[i].g.lun ||
 				ppa_list[0].g.ch != ppa_list[i].g.ch);
 #endif
+
 
 	while (pblk_rail_luns_busy(pblk, pos)) {}
 

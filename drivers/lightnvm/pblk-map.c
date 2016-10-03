@@ -47,19 +47,17 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 		 * entry we are setting up for submission without taking any
 		 * lock or memory barrier.
 		 */
+
 		if (i < valid_secs) {
 			kref_get(&line->ref);
 			line->nr_valid_lbas++;
 			if (!rail_parity) {
-			  //			  printk(KERN_EMERG "kref get %lu\n", READ_ONCE(line->ref.refcount));
 				w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry + i);
 				w_ctx->ppa = ppa_list[i];
 				meta_list[i].lba = cpu_to_le64(w_ctx->lba);
 				lba_list[paddr] = cpu_to_le64(w_ctx->lba);
 			}
 			else{
-//				static long beg = 0;
-//				printk(KERN_EMERG "lin get %p %d\n", line, beg++);
 				pblk->rail.prev_rq_line = line;
 				pblk->rail.prev_nr_secs++;
 				line->rail_parity_secs--;
@@ -74,7 +72,7 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 
 	if (pblk_line_is_full(line)) {
 		struct pblk_line *prev_line = line;
-		//	printk(KERN_EMERG "line is full\n ");
+
 		pblk_line_replace_data(pblk);
 		pblk_line_close_meta(pblk, prev_line);
 	}

@@ -114,6 +114,9 @@ struct pblk_c_ctx {
 /* generic context */
 struct pblk_g_ctx {
 	void *private;
+	unsigned long bitmap;
+	unsigned int nr_orig_secs;
+	unsigned char pvalid[PBLK_MAX_REQ_ADDRS];
 	u64 lba;
 };
 
@@ -832,6 +835,7 @@ int pblk_alloc_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
  * pblk read path
  */
 extern struct bio_set *pblk_bio_set;
+void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd);
 int pblk_submit_read(struct pblk *pblk, struct bio *bio);
 int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq);
 /*
@@ -1003,6 +1007,16 @@ static inline int pblk_ppa_to_pos(struct nvm_geo *geo, struct ppa_addr p)
 static inline int pblk_dev_ppa_to_pos(struct nvm_geo *geo, struct ppa_addr p)
 {
 	return p.g.lun * geo->nr_chnls + p.g.ch;
+}
+
+static inline int pblk_pos_to_lun(struct nvm_geo *geo, int pos)
+{
+	return pos >> ilog2(geo->nr_chnls);
+}
+
+static inline int pblk_pos_to_chnl(struct nvm_geo *geo, int pos)
+{
+	return pos % geo->nr_chnls;
 }
 
 static inline struct ppa_addr pblk_ppa32_to_ppa64(struct pblk *pblk, u32 ppa32)
