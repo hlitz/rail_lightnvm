@@ -65,6 +65,7 @@ enum {
 	PBLK_WRITTEN_DATA	= 1 << 3,
 	PBLK_SUBMITTED_ENTRY	= 1 << 4,
 	PBLK_WRITABLE_ENTRY	= 1 << 5,
+	PBLK_RAIL_PARITY        = 1 << 6,
 };
 
 enum {
@@ -550,6 +551,9 @@ struct pblk {
 	struct timer_list wtimer;
 
 	struct pblk_gc gc;
+	
+        /* Number of LUNs comprising a rail stride including parity */
+	unsigned int rail_stride_width;
 };
 
 struct pblk_line_ws {

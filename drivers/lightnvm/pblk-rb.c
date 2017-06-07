@@ -205,6 +205,12 @@ static int __pblk_rb_update_l2p(struct pblk_rb *rb, unsigned int *l2p_upd,
 		entry = &rb->entries[*l2p_upd];
 		w_ctx = &entry->w_ctx;
 
+		if (w_ctx->flags & PBLK_RAIL_PARITY) {
+                        //FIXME: put line ref?
+			clean_wctx(w_ctx);
+			continue;
+		}
+
 		pblk_update_map_dev(pblk, w_ctx->lba, w_ctx->ppa,
 							entry->cacheline);
 
@@ -364,19 +370,44 @@ static int pblk_rb_sync_point_set(struct pblk_rb *rb, struct bio *bio,
 	return 1;
 }
 
-static int __pblk_rb_may_write(struct pblk_rb *rb, unsigned int nr_entries,
+static unsigned int pblk_rail_nr_parity_secs(struct pblk *pblk,
+					     unsigned int pos,
+					     unsigned int nr_entries)
+{
+	unsigned int parity_entries = 0;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+	unsigned int write_secs = geo->sec_per_pl * geo->sec_per_pg;
+	unsigned int data_secs = (pblk->rail_stride_width - 1) * write_secs;
+
+	while (nr_entries - data_secs >= 0) {
+		parity_entries++;
+		nr_entries -= data_secs;
+	}
+
+	if (nr_entries + (pos % data_secs) >= data_secs)
+		parity_entries++;
+
+	return parity_entries;
+}
+
+static int __pblk_rb_may_write(struct pblk_rb *rb, unsigned int *nr_entries,
 			       unsigned int *pos)
 {
+	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 	unsigned int mem;
 	unsigned int sync;
 
 	sync = READ_ONCE(rb->sync);
 	mem = READ_ONCE(rb->mem);
+	
+	if (pblk->rail_stride_width) 
+		*nr_entries += pblk_rail_nr_parity_secs(pblk, mem, *nr_entries);
 
-	if (pblk_rb_ring_space(rb, mem, sync, rb->nr_entries) < nr_entries)
+	if (pblk_rb_ring_space(rb, mem, sync, rb->nr_entries) < *nr_entries)
 		return 0;
 
-	if (pblk_rb_update_l2p(rb, nr_entries, mem, sync))
+	if (pblk_rb_update_l2p(rb, *nr_entries, mem, sync))
 		return 0;
 
 	*pos = mem;
@@ -387,7 +418,7 @@ static int __pblk_rb_may_write(struct pblk_rb *rb, unsigned int nr_entries,
 static int pblk_rb_may_write(struct pblk_rb *rb, unsigned int nr_entries,
 			     unsigned int *pos)
 {
-	if (!__pblk_rb_may_write(rb, nr_entries, pos))
+	if (!__pblk_rb_may_write(rb, &nr_entries, pos))
 		return 0;
 
 	/* Protect from read count */
@@ -401,7 +432,7 @@ static int pblk_rb_may_write_flush(struct pblk_rb *rb, unsigned int nr_entries,
 {
 	unsigned int mem;
 
-	if (!__pblk_rb_may_write(rb, nr_entries, pos))
+	if (!__pblk_rb_may_write(rb, &nr_entries, pos))
 		return 0;
 
 	mem = (*pos + nr_entries) & (rb->nr_entries - 1);
@@ -793,6 +824,73 @@ out:
 unsigned int pblk_rb_wrap_pos(struct pblk_rb *rb, unsigned int pos)
 {
 	return (pos & (rb->nr_entries - 1));
+}
+
+void pblk_rail_gen_parity(void *dest, void *src)
+{
+	unsigned int i;
+	
+	for (i = 0; i < PBLK_EXPOSED_PAGE_SIZE / sizeof(unsigned long); i++) {
+		*(unsigned long *)dest ^= *(unsigned long *)src; 
+	}
+}
+			
+/* RAIL Example: 
+   LUNs = 8, stride width = 4, sec_per_pl = 2, sec_per_pg = 2
+   2 concurrent open strides: A & B consiting of 3 data + parity
+   PB3PB2PB1PB0 PA3PA2PA1PA0 B23B22B21B20 A23A22A21A20 B13B12B11B10 A13A12A11A10 B03B02B01B00 A03A02A01A00
+   <---- time ---- 
+   Parity needs to computed per sector in the following order:
+   1. PA0 = A00 ^ A10 ^ A20
+   2. P1A = A01 ^ A11 ^ A21
+   ...
+   16. PB3 = B03 ^ B13 ^ B23
+*/
+unsigned int pblk_rb_increment_pos(struct pblk *pblk, struct pblk_rb *rb,
+				   unsigned int pos)
+{
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+	unsigned int open_strides = geo->nr_luns / pblk->rail_stride_width;
+	unsigned int write_secs = geo->sec_per_pl * geo->sec_per_pg;
+	unsigned int parity_secs = open_strides * write_secs; 
+	unsigned int data_secs = (pblk->rail_stride_width - 1) * write_secs;
+
+	if (pblk->rail_stride_width && (pos % data_secs) == 0) {
+		unsigned int base, parity;
+		unsigned int len = (pblk->rail_stride_width - 1) * parity_secs;
+
+		for (parity = pos + 1, base = pos - len; 
+		     base < parity_secs; 
+		     parity++, base++) {
+			struct pblk_rb_entry *entry;
+			unsigned int flags, dp;
+			
+			entry = &rb->entries[parity];
+			memset(&entry->data, 0, PBLK_EXPOSED_PAGE_SIZE);
+			
+			for (dp = base; dp < base + len; dp += parity_secs) {
+				pblk_rail_gen_parity(&entry->data,
+						     &rb->entries[dp].data);
+			}
+
+			flags = READ_ONCE(entry->w_ctx.flags);
+
+#ifdef CONFIG_NVM_DEBUG
+			/* Caller must guarantee that the entry is free */
+			BUG_ON(!(flags & PBLK_WRITABLE_ENTRY));
+#endif
+
+			flags = flags | PBLK_RAIL_PARITY | PBLK_WRITTEN_DATA;
+
+			/* Release flags on write context. Protect from writes */
+			smp_store_release(&entry->w_ctx.flags, flags);
+		}
+
+		pos += parity_secs;
+	}
+	
+	return pblk_rb_wrap_pos(rb, pos + 1);
 }
 
 int pblk_rb_pos_oob(struct pblk_rb *rb, u64 pos)
