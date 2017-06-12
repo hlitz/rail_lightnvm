@@ -979,6 +979,11 @@ retry_smeta:
 
 	bitmap_copy(line->invalid_bitmap, line->map_bitmap, lm->sec_per_line);
 
+	/* Mark RAIL parity sectors as invalid to enable their gc */
+	if (pblk->rail_stride_width)
+	  bitmap_set(line->invalid_bitmap, pblk_rail_data_secs_per_line(pblk), 
+		     pblk_rail_parity_secs_per_line(pblk));
+	BUG_ON(pblk->rail_stride_width);
 	/* Mark emeta metadata sectors as bad sectors. We need to consider bad
 	 * blocks to make sure that there are enough sectors to store emeta
 	 */
@@ -1664,4 +1669,34 @@ void pblk_lookup_l2p_rand(struct pblk *pblk, struct ppa_addr *ppas,
 		}
 	}
 	spin_unlock(&pblk->trans_lock);
+}
+ 
+void pblk_rail_gen_parity(void *dest, void *src)
+{
+	unsigned int i;
+	
+	for (i = 0; i < PBLK_EXPOSED_PAGE_SIZE / sizeof(unsigned long); i++) {
+		*(unsigned long *)dest ^= *(unsigned long *)src; 
+	}
+}
+			
+unsigned int pblk_rail_parity_secs_per_line(struct pblk *pblk)
+{
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+	unsigned int open_strides = geo->nr_luns / pblk->rail_stride_width;
+	unsigned int write_secs = geo->sec_per_pl * geo->sec_per_pg;
+	unsigned int parity_secs = open_strides * write_secs; 
+	
+	return parity_secs;
+}
+
+unsigned int pblk_rail_data_secs_per_line(struct pblk *pblk)
+{
+	unsigned int data_secs;
+  
+	data_secs = (pblk->rail_stride_width - 1) *
+		pblk_rail_parity_secs_per_line(pblk);
+	
+	return data_secs;
 }

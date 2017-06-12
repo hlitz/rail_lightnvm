@@ -758,6 +758,14 @@ void pblk_rl_free_lines_dec(struct pblk_rl *rl, struct pblk_line *line);
 int pblk_sysfs_init(struct gendisk *tdisk);
 void pblk_sysfs_exit(struct gendisk *tdisk);
 
+/*
+ * pblk RAIL
+ */
+void pblk_rail_gen_parity(void *dest, void *src);
+unsigned int pblk_rail_parity_secs_per_line(struct pblk *pblk);
+unsigned int pblk_rail_data_secs_per_line(struct pblk *pblk);
+
+
 static inline void *pblk_malloc(size_t size, int type, gfp_t flags)
 {
 	if (type == PBLK_KMALLOC_META)

@@ -826,15 +826,6 @@ unsigned int pblk_rb_wrap_pos(struct pblk_rb *rb, unsigned int pos)
 	return (pos & (rb->nr_entries - 1));
 }
 
-void pblk_rail_gen_parity(void *dest, void *src)
-{
-	unsigned int i;
-	
-	for (i = 0; i < PBLK_EXPOSED_PAGE_SIZE / sizeof(unsigned long); i++) {
-		*(unsigned long *)dest ^= *(unsigned long *)src; 
-	}
-}
-			
 /* RAIL Example: 
    LUNs = 8, stride width = 4, sec_per_pl = 2, sec_per_pg = 2
    2 concurrent open strides: A & B consiting of 3 data + parity
@@ -849,12 +840,8 @@ void pblk_rail_gen_parity(void *dest, void *src)
 unsigned int pblk_rb_increment_pos(struct pblk *pblk, struct pblk_rb *rb,
 				   unsigned int pos)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
-	struct nvm_geo *geo = &dev->geo;
-	unsigned int open_strides = geo->nr_luns / pblk->rail_stride_width;
-	unsigned int write_secs = geo->sec_per_pl * geo->sec_per_pg;
-	unsigned int parity_secs = open_strides * write_secs; 
-	unsigned int data_secs = (pblk->rail_stride_width - 1) * write_secs;
+	unsigned int data_secs = pblk_rail_data_secs_per_line(pblk);
+	unsigned int parity_secs = pblk_rail_parity_secs_per_line(pblk);
 
 	if (pblk->rail_stride_width && (pos % data_secs) == 0) {
 		unsigned int base, parity;
