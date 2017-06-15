@@ -904,6 +904,9 @@ static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk,
 	blk_queue_max_discard_sectors(tqueue, UINT_MAX >> 9);
 	queue_flag_set_unlocked(QUEUE_FLAG_DISCARD, tqueue);
 
+	/* FIXME */
+	pblk->rail_stride_width = 4;
+
 	pr_info("pblk init: luns:%u, lines:%d, secs:%llu, buf entries:%u\n",
 			geo->nr_luns, pblk->l_mg.nr_lines,
 			(unsigned long long)pblk->rl.nr_secs,

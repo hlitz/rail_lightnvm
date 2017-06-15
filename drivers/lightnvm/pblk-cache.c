@@ -21,7 +21,7 @@ int pblk_write_to_cache(struct pblk *pblk, struct bio *bio, unsigned long flags)
 {
 	struct pblk_w_ctx w_ctx;
 	sector_t lba = pblk_get_lba(bio);
-	unsigned int bpos, pos;
+	unsigned int pos;
 	int nr_entries = pblk_get_secs(bio);
 	int i, ret;
 
@@ -30,7 +30,7 @@ int pblk_write_to_cache(struct pblk *pblk, struct bio *bio, unsigned long flags)
 	 * rollback from here on.
 	 */
 retry:
-	ret = pblk_rb_may_write_user(&pblk->rwb, bio, nr_entries, &bpos);
+	ret = pblk_rb_may_write_user(&pblk->rwb, bio, nr_entries, &pos);
 	if (ret == NVM_IO_REQUEUE) {
 		io_schedule();
 		goto retry;
@@ -46,10 +46,8 @@ retry:
 		void *data = bio_data(bio);
 
 		w_ctx.lba = lba + i;
-
-		pos = pblk_rb_wrap_pos(&pblk->rwb, bpos + i);
 		pblk_rb_write_entry_user(&pblk->rwb, data, w_ctx, pos);
-
+		pos = pblk_rb_increment_pos(pblk, &pblk->rwb, pos);
 		bio_advance(bio, PBLK_EXPOSED_PAGE_SIZE);
 	}
 

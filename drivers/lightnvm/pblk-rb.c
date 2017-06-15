@@ -176,7 +176,7 @@ unsigned int pblk_rb_read_count(struct pblk_rb *rb)
 {
 	unsigned int mem = READ_ONCE(rb->mem);
 	unsigned int subm = READ_ONCE(rb->subm);
-
+	
 	return pblk_rb_ring_count(mem, subm, rb->nr_entries);
 }
 
@@ -188,7 +188,7 @@ unsigned int pblk_rb_read_commit(struct pblk_rb *rb, unsigned int nr_entries)
 	/* Commit read means updating submission pointer */
 	smp_store_release(&rb->subm,
 				(subm + nr_entries) & (rb->nr_entries - 1));
-
+	
 	return subm;
 }
 
@@ -205,15 +205,10 @@ static int __pblk_rb_update_l2p(struct pblk_rb *rb, unsigned int *l2p_upd,
 		entry = &rb->entries[*l2p_upd];
 		w_ctx = &entry->w_ctx;
 
-		if (w_ctx->flags & PBLK_RAIL_PARITY) {
-                        //FIXME: put line ref?
-			clean_wctx(w_ctx);
-			continue;
-		}
-
-		pblk_update_map_dev(pblk, w_ctx->lba, w_ctx->ppa,
-							entry->cacheline);
-
+		if (!(w_ctx->flags & PBLK_RAIL_PARITY)) 
+			pblk_update_map_dev(pblk, w_ctx->lba, w_ctx->ppa,
+					    entry->cacheline);
+		
 		line = &pblk->lines[pblk_tgt_ppa_to_line(w_ctx->ppa)];
 		kref_put(&line->ref, pblk_line_put);
 		clean_wctx(w_ctx);
@@ -375,20 +370,18 @@ static unsigned int pblk_rail_nr_parity_secs(struct pblk *pblk,
 					     unsigned int nr_entries)
 {
 	unsigned int parity_entries = 0;
-	struct nvm_tgt_dev *dev = pblk->dev;
-	struct nvm_geo *geo = &dev->geo;
-	unsigned int write_secs = geo->sec_per_pl * geo->sec_per_pg;
-	unsigned int data_secs = (pblk->rail_stride_width - 1) * write_secs;
+	int data_secs = (int)pblk_rail_data_secs_per_line(pblk);
+	int nr_entries_left = (int)nr_entries;
 
-	while (nr_entries - data_secs >= 0) {
+	while ((nr_entries_left - data_secs) >= 0) {
 		parity_entries++;
-		nr_entries -= data_secs;
+		nr_entries_left -= data_secs;
 	}
 
-	if (nr_entries + (pos % data_secs) >= data_secs)
+	if (nr_entries_left + ((int)pos % data_secs) >= data_secs)
 		parity_entries++;
-
-	return parity_entries;
+       	
+	return parity_entries * pblk_rail_parity_secs_per_line(pblk);
 }
 
 static int __pblk_rb_may_write(struct pblk_rb *rb, unsigned int *nr_entries,
@@ -842,26 +835,29 @@ unsigned int pblk_rb_increment_pos(struct pblk *pblk, struct pblk_rb *rb,
 {
 	unsigned int data_secs = pblk_rail_data_secs_per_line(pblk);
 	unsigned int parity_secs = pblk_rail_parity_secs_per_line(pblk);
-
-	if (pblk->rail_stride_width && (pos % data_secs) == 0) {
-		unsigned int base, parity;
+	
+	if (pblk->rail_stride_width && ((pos + 1) % data_secs) == 0) {
+		unsigned int offset, parity;
 		unsigned int len = (pblk->rail_stride_width - 1) * parity_secs;
+		unsigned int base = pos + 1 - len;		
 
-		for (parity = pos + 1, base = pos - len; 
-		     base < parity_secs; 
-		     parity++, base++) {
+		for (offset = base, parity = pos + 1; 
+		     offset < (base + parity_secs); 
+		     parity++, offset++) {
 			struct pblk_rb_entry *entry;
 			unsigned int flags, dp;
 			
 			entry = &rb->entries[parity];
-			memset(&entry->data, 0, PBLK_EXPOSED_PAGE_SIZE);
+
+			memset(entry->data, 0, rb->seg_size);
 			
-			for (dp = base; dp < base + len; dp += parity_secs) {
-				pblk_rail_gen_parity(&entry->data,
-						     &rb->entries[dp].data);
+			for (dp = offset; dp < offset + len; dp += parity_secs) {
+				pblk_rail_gen_parity(entry->data,
+						     rb->entries[dp].data);
 			}
 
 			flags = READ_ONCE(entry->w_ctx.flags);
+			pblk_ppa_set_empty(&entry->w_ctx.ppa);
 
 #ifdef CONFIG_NVM_DEBUG
 			/* Caller must guarantee that the entry is free */
@@ -873,7 +869,6 @@ unsigned int pblk_rb_increment_pos(struct pblk *pblk, struct pblk_rb *rb,
 			/* Release flags on write context. Protect from writes */
 			smp_store_release(&entry->w_ctx.flags, flags);
 		}
-
 		pos += parity_secs;
 	}
 	

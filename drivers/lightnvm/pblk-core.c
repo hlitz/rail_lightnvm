@@ -978,12 +978,7 @@ retry_smeta:
 	}
 
 	bitmap_copy(line->invalid_bitmap, line->map_bitmap, lm->sec_per_line);
-
-	/* Mark RAIL parity sectors as invalid to enable their gc */
-	if (pblk->rail_stride_width)
-	  bitmap_set(line->invalid_bitmap, pblk_rail_data_secs_per_line(pblk), 
-		     pblk_rail_parity_secs_per_line(pblk));
-	BUG_ON(pblk->rail_stride_width);
+	
 	/* Mark emeta metadata sectors as bad sectors. We need to consider bad
 	 * blocks to make sure that there are enough sectors to store emeta
 	 */
