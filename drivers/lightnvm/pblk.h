@@ -818,6 +818,16 @@ static inline int pblk_ppa_to_pos(struct nvm_geo *geo, struct ppa_addr p)
 	return p.g.lun * geo->nr_chnls + p.g.ch;
 }
 
+static inline int pblk_dev_ppa_to_lun(struct ppa_addr p)
+{
+	return p.g.lun;
+}
+
+static inline void pblk_dev_ppa_set_lun(struct ppa_addr *p, int lun)
+{
+	p->g.lun = lun;
+}
+
 /* A block within a line corresponds to the lun */
 static inline int pblk_dev_ppa_to_pos(struct nvm_geo *geo, struct ppa_addr p)
 {
