@@ -1,5 +1,10 @@
 #include "pblk.h"
 
+unsigned int pblk_rail_enabled(struct pblk *pblk)
+{
+	return pblk->rail_stride_width > 0;
+}
+
 unsigned int pblk_rail_nr_strides(struct pblk *pblk)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
@@ -31,6 +36,7 @@ unsigned int pblk_rail_data_secs_per_line(struct pblk *pblk)
 
 int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
 {
+	/* Unfortunately there is no API to check a semaphore value */
 	return (pblk->luns[pblk_dev_ppa_to_lun(ppa)].wr_sem.count == 0);
 } 
 

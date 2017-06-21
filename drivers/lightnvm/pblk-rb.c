@@ -394,7 +394,7 @@ static int __pblk_rb_may_write(struct pblk_rb *rb, unsigned int *nr_entries,
 	sync = READ_ONCE(rb->sync);
 	mem = READ_ONCE(rb->mem);
 	
-	if (pblk->rail_stride_width) 
+	if (pblk_rail_enabled(pblk)) 
 		*nr_entries += pblk_rail_nr_parity_secs(pblk, mem, *nr_entries);
 
 	if (pblk_rb_ring_space(rb, mem, sync, rb->nr_entries) < *nr_entries)
@@ -836,7 +836,7 @@ unsigned int pblk_rb_increment_pos(struct pblk *pblk, struct pblk_rb *rb,
 	unsigned int data_secs = pblk_rail_data_secs_per_line(pblk);
 	unsigned int parity_secs = pblk_rail_parity_secs_per_line(pblk);
 	
-	if (pblk->rail_stride_width && ((pos + 1) % data_secs) == 0) {
+	if (pblk_rail_enabled(pblk) && ((pos + 1) % data_secs) == 0) {
 		unsigned int offset, parity;
 		unsigned int len = (pblk->rail_stride_width - 1) * parity_secs;
 		unsigned int base = pos + 1 - len;		
