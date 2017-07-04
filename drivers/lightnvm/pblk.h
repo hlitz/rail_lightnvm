@@ -378,6 +378,7 @@ struct pblk_line {
 	int left_ssecs;			/* Sectors left to sync */
 	unsigned int cur_sec;		/* Sector map pointer */
 	unsigned int vsc;		/* Valid sector count in line */
+	unsigned int rail_parity_secs;  /* RAIL parity sector count in line */
 
 	struct kref ref;		/* Write buffer L2P references */
 
@@ -761,9 +762,13 @@ void pblk_sysfs_exit(struct gendisk *tdisk);
 /*
  * pblk RAIL
  */
+unsigned int pblk_rail_enabled(struct pblk *pblk);
 void pblk_rail_gen_parity(void *dest, void *src);
 unsigned int pblk_rail_parity_secs_per_line(struct pblk *pblk);
 unsigned int pblk_rail_data_secs_per_line(struct pblk *pblk);
+unsigned int pblk_rail_nr_parity_luns(struct pblk *pblk);
+unsigned int pblk_rail_nr_data_luns(struct pblk *pblk);
+
 unsigned int pblk_rb_increment_pos(struct pblk *pblk, struct pblk_rb *rb,
 				   unsigned int pos);
 

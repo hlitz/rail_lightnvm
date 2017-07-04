@@ -5,21 +5,32 @@ unsigned int pblk_rail_enabled(struct pblk *pblk)
 	return pblk->rail_stride_width > 0;
 }
 
-unsigned int pblk_rail_nr_strides(struct pblk *pblk)
+unsigned int pblk_rail_nr_parity_luns(struct pblk *pblk)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 
-	return geo->nr_luns / pblk->rail_stride_width;
+	if (pblk_rail_enabled(pblk))
+		return geo->nr_luns / pblk->rail_stride_width;
+
+	return 0;
+}
+
+unsigned int pblk_rail_nr_data_luns(struct pblk *pblk)
+{
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+
+	return geo->nr_luns - pblk_rail_nr_parity_luns(pblk);
 }
 
 unsigned int pblk_rail_parity_secs_per_line(struct pblk *pblk)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
-	unsigned int strides = pblk_rail_nr_strides(pblk);
+	unsigned int pluns = pblk_rail_nr_parity_luns(pblk);
 	unsigned int write_secs = geo->sec_per_pl * geo->sec_per_pg;
-	unsigned int parity_secs = strides * write_secs; 
+	unsigned int parity_secs = pluns * write_secs; 
 	
 	return parity_secs;
 }
@@ -53,7 +64,7 @@ void pblk_rail_lun_neighbors(struct pblk *pblk, struct ppa_addr ppa,
 			     struct ppa_addr *neighbors)
 {
 	unsigned int lun_id = pblk_dev_ppa_to_lun(ppa);
-	unsigned int strides = pblk_rail_nr_strides(pblk);
+	unsigned int strides = pblk_rail_nr_parity_luns(pblk);
 	unsigned int i;
 	printk(KERN_EMERG "orig lun %i\n", lun_id);
 	for (i = 0; i < (pblk->rail_stride_width - 1); i++) {
@@ -75,3 +86,8 @@ void pblk_rail_gen_parity(void *dest, void *src)
 	}
 }
 			
+/* Read Path */
+unsigned long * pblk_rail_alloc_bitmap(void)
+{
+	return NULL;	
+}

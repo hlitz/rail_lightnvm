@@ -946,8 +946,10 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	int nr_bb = 0;
 	u64 off;
 	int bit = -1;
+	unsigned long rail_stride_secs;
 
 	line->sec_in_line = lm->sec_per_line;
+	line->rail_parity_secs = 0;
 
 	/* Capture bad block information on line mapping bitmaps */
 	while ((bit = find_next_bit(line->blk_bitmap, lm->blk_per_line,
@@ -958,6 +960,7 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 		bitmap_or(line->map_bitmap, line->map_bitmap, l_mg->bb_aux,
 							lm->sec_per_line);
 		line->sec_in_line -= geo->sec_per_blk;
+		printk(KERN_EMERG "caputeur bad block sec per blk: %d --\n", geo->sec_per_blk); 
 		if (bit >= lm->emeta_bb)
 			nr_bb++;
 	}
@@ -978,7 +981,7 @@ retry_smeta:
 	}
 
 	bitmap_copy(line->invalid_bitmap, line->map_bitmap, lm->sec_per_line);
-	
+
 	/* Mark emeta metadata sectors as bad sectors. We need to consider bad
 	 * blocks to make sure that there are enough sectors to store emeta
 	 */
@@ -997,12 +1000,28 @@ retry_smeta:
 	line->emeta_ssec = off;
 	line->vsc = line->left_ssecs = line->left_msecs = line->sec_in_line;
 
+	/* Mark RAIL parity sectors as invalid so they can be GC'ed */	
+	off = 0;
+	rail_stride_secs = pblk_rail_data_secs_per_line(pblk) + 
+		pblk_rail_parity_secs_per_line(pblk);
+	
+	while (off + rail_stride_secs <= line->sec_in_line) {
+		bitmap_set(line->invalid_bitmap, off + 
+			   pblk_rail_data_secs_per_line(pblk),
+			   pblk_rail_parity_secs_per_line(pblk));
+		off += rail_stride_secs;
+		line->rail_parity_secs += pblk_rail_parity_secs_per_line(pblk);
+	}
+
+	printk(KERN_EMERG "%d - %d rail %d line: %p\n", lm->sec_per_line , line->sec_in_line , 
+	       line->rail_parity_secs, line);
 	if (lm->sec_per_line - line->sec_in_line !=
-		bitmap_weight(line->invalid_bitmap, lm->sec_per_line)) {
+	    bitmap_weight(line->invalid_bitmap, lm->sec_per_line) -
+	    line->rail_parity_secs) {
 		spin_lock(&line->lock);
 		line->state = PBLK_LINESTATE_BAD;
 		spin_unlock(&line->lock);
-
+		
 		list_add_tail(&line->list, &l_mg->bad_list);
 		pr_err("pblk: unexpected line %d is bad\n", line->id);
 
@@ -1390,6 +1409,10 @@ void pblk_line_close(struct pblk *pblk, struct pblk_line *line)
 
 	WARN(!bitmap_full(line->map_bitmap, line->sec_in_line),
 				"pblk: corrupt closed line %d\n", line->id);
+
+	/* Check that the expected number of parity secs has been written */
+	printk(KERN_EMERG " PBLK CLOSE line %p secs %d\n", line, line->rail_parity_secs);
+	BUG_ON(line->rail_parity_secs);
 
 	spin_lock(&l_mg->free_lock);
 	WARN_ON(!test_and_clear_bit(line->meta_line, &l_mg->meta_bitmap));
