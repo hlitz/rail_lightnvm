@@ -199,7 +199,7 @@ static void pblk_end_io_write_meta(struct nvm_rq *rqd)
 
 	bio_put(rqd->bio);
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
-	pblk_free_rqd(pblk, rqd, READ);
+	pblk_free_rqd(pblk, rqd, WRITE_INT);
 
 	atomic_dec(&pblk->inflight_io);
 }
@@ -370,7 +370,7 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 	int i, j;
 	int ret;
 
-	rqd = pblk_alloc_rqd(pblk, READ);
+	rqd = pblk_alloc_rqd(pblk, WRITE_INT);
 	if (IS_ERR(rqd)) {
 		pr_err("pblk: cannot allocate write req.\n");
 		return PTR_ERR(rqd);
@@ -434,7 +434,7 @@ fail_free_bio:
 	if (likely(l_mg->emeta_alloc_type == PBLK_VMALLOC_META))
 		bio_put(bio);
 fail_free_rqd:
-	pblk_free_rqd(pblk, rqd, READ);
+	pblk_free_rqd(pblk, rqd, WRITE_INT);
 	return ret;
 }
 

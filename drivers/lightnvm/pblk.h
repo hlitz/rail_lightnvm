@@ -59,7 +59,10 @@
 		for ((i) = 0, rlun = &(pblk)->luns[0]; \
 			(i) < (pblk)->nr_luns; (i)++, rlun = &(pblk)->luns[(i)])
 
-#define ERASE 2 /* READ = 0, WRITE = 1 */
+/* READ = 0, WRITE (user) = 1 */
+#define ERASE 2
+#define WRITE_INT 3 /* Internal write. Not through write buffer */
+
 
 enum {
 	/* IO Types */
