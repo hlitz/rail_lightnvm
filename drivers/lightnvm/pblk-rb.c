@@ -383,6 +383,7 @@ static int pblk_rb_sync_point_set(struct pblk_rb *rb, struct bio *bio,
 
 	spin_lock_irq(&rb->s_lock);
 	bio_list_add(&entry->w_ctx.bios, bio);
+	printk(KERN_EMERG "set cynd poing %p\n", bio);
 	spin_unlock_irq(&rb->s_lock);
 
 	return 1;
@@ -830,6 +831,16 @@ out:
 	spin_unlock_irq(&rb->s_lock);
 
 	return ret;
+}
+
+unsigned int pblk_rb_pos_sub(struct pblk_rb *rb, unsigned int diff)
+{
+	int res = (int)READ_ONCE(rb->subm) - diff;
+	
+	if (res < 0)
+		res += rb->nr_entries;
+
+	return res;
 }
 
 unsigned int pblk_rb_wrap_pos(struct pblk_rb *rb, unsigned int pos)

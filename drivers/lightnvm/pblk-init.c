@@ -289,6 +289,9 @@ static int pblk_core_init(struct pblk *pblk)
 	if (pblk_set_ppaf(pblk))
 		goto free_bb_wq;
 
+	if (pblk_rail_init(pblk))
+		goto free_bb_wq;
+
 	if (pblk_rwb_init(pblk))
 		goto free_bb_wq;
 

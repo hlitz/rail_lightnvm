@@ -29,8 +29,10 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 		struct pblk_w_ctx *w_ctx;
 
 		w_ctx = pblk_rb_w_ctx(&pblk->rwb, c_ctx->sentry + i);
-		while ((original_bio = bio_list_pop(&w_ctx->bios)))
+		while ((original_bio = bio_list_pop(&w_ctx->bios))){
+			printk(KERN_EMERG "Ending orig bio %p\n", original_bio);
 			bio_endio(original_bio);
+		}
 	}
 
 #ifdef CONFIG_NVM_DEBUG
@@ -67,6 +69,11 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 #endif
 
 	pblk_up_rq(pblk, rqd->ppa_list, rqd->nr_ppas, c_ctx->lun_bitmap);
+
+	if (c_ctx->is_rail) {
+		pblk_rail_end_parity_write(pblk, rqd, c_ctx);
+		return;
+	}
 
 	pos = pblk_rb_sync_init(&pblk->rwb, &flags);
 	if (pos == c_ctx->sentry) {
@@ -204,7 +211,7 @@ static void pblk_end_io_write_meta(struct nvm_rq *rqd)
 	atomic_dec(&pblk->inflight_io);
 }
 
-static int pblk_alloc_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
+int pblk_alloc_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 			   unsigned int nr_secs,
 			   nvm_end_io_fn(*end_io))
 {
@@ -229,7 +236,8 @@ static int pblk_alloc_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 }
 
 static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
-			   struct pblk_c_ctx *c_ctx, struct ppa_addr *erase_ppa)
+			   struct pblk_c_ctx *c_ctx, struct ppa_addr *erase_ppa,
+			   bool rail_parity)
 {
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct pblk_line *e_line = pblk_line_get_erase(pblk);
@@ -239,11 +247,11 @@ static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	unsigned long *lun_bitmap;
 	int ret = 0;
 
-	lun_bitmap = kzalloc(lm->lun_bitmap_len, GFP_KERNEL);
+	lun_bitmap = kzalloc(lm->lun_bitmap_len, GFP_ATOMIC);
 	if (!lun_bitmap)
 		return -ENOMEM;
 	c_ctx->lun_bitmap = lun_bitmap;
-
+	
 	ret = pblk_alloc_w_rq(pblk, rqd, nr_secs, pblk_end_io_write);
 	if (ret) {
 		kfree(lun_bitmap);
@@ -251,11 +259,12 @@ static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	}
 
 	if (likely(!e_line || !atomic_read(&e_line->left_eblks)))
-		pblk_map_rq(pblk, rqd, c_ctx->sentry, lun_bitmap, valid, 0);
-	else
+		pblk_map_rq(pblk, rqd, c_ctx->sentry, lun_bitmap, valid, 0,
+			    rail_parity);
+	else {
 		pblk_map_erase_rq(pblk, rqd, c_ctx->sentry, lun_bitmap,
-							valid, erase_ppa);
-
+				  valid, erase_ppa, rail_parity);
+}
 	return 0;
 }
 
@@ -276,7 +285,8 @@ int pblk_setup_w_rec_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	if (ret)
 		return ret;
 
-	pblk_map_rq(pblk, rqd, c_ctx->sentry, lun_bitmap, c_ctx->nr_valid, 0);
+	pblk_map_rq(pblk, rqd, c_ctx->sentry, lun_bitmap, c_ctx->nr_valid, 0, 
+		    false);
 
 	rqd->ppa_status = (u64)0;
 	rqd->flags = pblk_set_progr_mode(pblk, WRITE);
@@ -413,7 +423,7 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 	}
 
 	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas);
-
+	
 	ret = pblk_submit_io(pblk, rqd);
 	if (ret) {
 		pr_err("pblk: emeta I/O submission failed: %d\n", ret);
@@ -458,11 +468,12 @@ retry:
 
 	if (!pblk_valid_meta_ppa(pblk, meta_line, prev_list, prev_n))
 		return 0;
-
+	
 	return pblk_submit_meta_io(pblk, meta_line);
 }
 
-static int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd)
+int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd, 
+		       bool rail_parity)
 {
 	struct pblk_c_ctx *c_ctx = nvm_rq_to_pdu(rqd);
 	struct ppa_addr erase_ppa;
@@ -471,7 +482,7 @@ static int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd)
 	ppa_set_empty(&erase_ppa);
 
 	/* Assign lbas to ppas and populate request structure */
-	err = pblk_setup_w_rq(pblk, rqd, c_ctx, &erase_ppa);
+	err = pblk_setup_w_rq(pblk, rqd, c_ctx, &erase_ppa, rail_parity);
 	if (err) {
 		pr_err("pblk: could not setup write request: %d\n", err);
 		return NVM_IO_ERR;
@@ -542,7 +553,7 @@ static int pblk_submit_write(struct pblk *pblk)
 	secs_to_flush = pblk_rb_sync_point_count(&pblk->rwb);
 	if (!secs_to_flush && secs_avail < pblk->min_write_pgs)
 		return 1;
-
+       
 	rqd = pblk_alloc_rqd(pblk, WRITE);
 	if (IS_ERR(rqd)) {
 		pr_err("pblk: cannot allocate write req.\n");
@@ -568,12 +579,12 @@ static int pblk_submit_write(struct pblk *pblk)
 	pos = pblk_rb_read_commit(&pblk->rwb, secs_to_com);
 
 	if (pblk_rb_read_to_bio(&pblk->rwb, rqd, bio, pos, secs_to_sync,
-								secs_avail)) {
+				secs_avail)) {
 		pr_err("pblk: corrupted write bio\n");
 		goto fail_put_bio;
 	}
 
-	if (pblk_submit_io_set(pblk, rqd))
+	if (pblk_submit_io_set(pblk, rqd, false))
 		goto fail_free_bio;
 
 #ifdef CONFIG_NVM_DEBUG
@@ -589,6 +600,7 @@ fail_put_bio:
 fail_free_rqd:
 	pblk_free_rqd(pblk, rqd, WRITE);
 
+
 	return 1;
 }
 
@@ -597,6 +609,9 @@ int pblk_write_ts(void *data)
 	struct pblk *pblk = data;
 
 	while (!kthread_should_stop()) {
+		if (pblk_rail_sched_parity(pblk))
+			pblk_rail_submit_write(pblk);
+
 		if (!pblk_submit_write(pblk))
 			continue;
 		set_current_state(TASK_INTERRUPTIBLE);

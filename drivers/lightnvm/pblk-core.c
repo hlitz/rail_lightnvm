@@ -1021,7 +1021,7 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
 	int nr_bb = 0;
 	u64 off;
-	int bit = -1;
+	int bit = -1, i;
 
 	line->sec_in_line = lm->sec_per_line;
 
@@ -1052,6 +1052,14 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	}
 
 	bitmap_copy(line->invalid_bitmap, line->map_bitmap, lm->sec_per_line);
+
+	/* Mark RAIL parity sectors as bad sectors, so they can be gc'ed */
+	for (i = 0; i < pblk_rail_stripe_per_line(pblk); i++) {
+		bitmap_set(line->invalid_bitmap, 
+			   i * pblk_rail_sec_per_stripe(pblk) + 
+			   pblk_rail_dsec_per_stripe(pblk), 
+			   pblk_rail_psec_per_stripe(pblk));
+	}
 
 	/* Mark emeta metadata sectors as bad sectors. We need to consider bad
 	 * blocks to make sure that there are enough sectors to store emeta
