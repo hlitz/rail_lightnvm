@@ -3,6 +3,7 @@
 
 #define PBLK_RAIL_BAD_SEC ~0x0
 #define PBLK_RAIL_PADDED_SEC (PBLK_RAIL_BAD_SEC - 1)
+#define BYTE_SHIFT 3
 
 unsigned int pblk_rail_enabled(struct pblk *pblk)
 {
@@ -81,22 +82,21 @@ unsigned int pblk_rail_stripe_good_secs(struct pblk *pblk,
 
 unsigned int pblk_rail_stripe_bad_psecs(struct pblk *pblk, int stripe)
 {
-/*
-	unsigned int stripe_size = pblk_rail_sec_per_stripe(pblk);	
-	unsigned long stripe_bitmap[BITS_TO_LONGS(stripe_size) * sizeof(long)];
-	unsigned long parity_bitmap[BITS_TO_LONGS(stripe_size) * sizeof(long)];
-//	unsigned long parity_bitmap[BITS_TO_LONGS(pblk_rail_psec_per_stripe(pblk) * sizeof(long)];
-	unsigned int psecs = pblk_rail_psec_per_stripe(pblk);
-	struct pblk_line *line = pblk_line_get_data(pblk);
-*/
 	struct pblk_line *line = pblk_line_get_data(pblk);
 	unsigned int byte_offset;
 	unsigned char * parity_bitmap;
 
-	byte_offset = pblk_rail_dsec_per_stripe(pblk) / 
-		sizeof(unsigned char);
+	byte_offset = (stripe * pblk_rail_sec_per_stripe(pblk) +
+		       pblk_rail_dsec_per_stripe(pblk)) >> BYTE_SHIFT;
 	parity_bitmap = (unsigned char *)line->map_bitmap + byte_offset;
-	printk (KERN_EMERG "sec per line %d sec %d stripe %d\n", pblk->lm.sec_per_line , line->cur_sec, stripe);
+	//printk (KERN_EMERG "sec per line %d sec %d stripe %d line %p parmap %p off %d\n", pblk->lm.sec_per_line , line->cur_sec, stripe, line, parity_bitmap, byte_offset);
+
+	BUG_ON(byte_offset > (pblk->lm.sec_per_line >> BYTE_SHIFT));
+
+/*	if(bitmap_weight((unsigned long *)parity_bitmap, 
+			 pblk_rail_psec_per_stripe(pblk)) != 32)
+			 printk(KERN_EMERG "parity bitmap addr %p content %p perl %d offset %d ii %d %d %d \n", parity_bitmap, line->map_bitmap, pblk->lm.sec_per_line, byte_offset, stripe , pblk_rail_sec_per_stripe(pblk) , 8);*/
+
 	return bitmap_weight((unsigned long *)parity_bitmap, 
 			     pblk_rail_psec_per_stripe(pblk));
 /*
@@ -113,8 +113,9 @@ unsigned int pblk_rail_stripe_good_psecs(struct pblk *pblk, int stripe)
 {
 	unsigned int secs = pblk_rail_psec_per_stripe(pblk);
 	unsigned int bad_secs = pblk_rail_stripe_bad_psecs(pblk, stripe);
-	printk(KERN_EMERG "s %d bad %d stripe %d \n", secs, bad_secs, stripe); 
-	
+	if((secs-bad_secs) !=32)
+		printk(KERN_EMERG "good secs only %d stripe %d\n", secs-bad_secs, stripe);
+	BUG_ON(((secs-bad_secs)%4)!=0);
 	return secs - bad_secs;
 }
 
@@ -171,8 +172,7 @@ unsigned int pblk_rail_cur_stripe(struct pblk *pblk)
 {
 	struct pblk_line *line = pblk_line_get_data(pblk);
 	unsigned int sec = line->cur_sec;
-	//printk(KERN_EMERG " cur strip %d sec %d \n", sec >> get_count_order(pblk_rail_sec_per_stripe(pblk)), sec);
-	
+	//printk(KERN_EMERG "sec %d stripe %d\n", sec, sec >> get_count_order(pblk_rail_sec_per_stripe(pblk)));
 	BUG_ON((sec >> get_count_order(pblk_rail_sec_per_stripe(pblk)) > pblk->lm.sec_per_line / pblk_rail_sec_per_stripe(pblk)));
 	return sec >> get_count_order(pblk_rail_sec_per_stripe(pblk));
 }
@@ -185,11 +185,27 @@ int pblk_rail_stripe_open(struct pblk *pblk, unsigned int sec)
 int pblk_rail_sched_parity(struct pblk *pblk)
 {
 	struct pblk_line *line = pblk_line_get_data(pblk);
-	unsigned int sec = line->cur_sec;
-	unsigned int sec_in_stripe = sec % pblk_rail_sec_per_stripe(pblk);
-       
-	return sec_in_stripe >= pblk_rail_dsec_per_stripe(pblk);
+	unsigned int sec_in_stripe;
+	
+	while (1) {
+		sec_in_stripe = line->cur_sec % pblk_rail_sec_per_stripe(pblk);
+		//printk(KERN_EMERG "sec in s %d dsec %d\n", sec_in_stripe, pblk_rail_dsec_per_stripe(pblk));
+		if (sec_in_stripe == pblk_rail_dsec_per_stripe(pblk))
+			return 1;
+	
+		if (test_bit(line->cur_sec, line->map_bitmap))
+			line->cur_sec += pblk->min_write_pgs;
+		else
+			break;
+	}
+
+	return 0;
 }
+		
+//if(sec_in_stripe >= pblk_rail_dsec_per_stripe(pblk))
+	//	printk(KERN_EMERG "sec in st %d per s %d\n", sec_in_stripe,pblk_rail_dsec_per_stripe(pblk));
+//	return sec_in_stripe >= pblk_rail_dsec_per_stripe(pblk);
+//}
 
 int pblk_rail_init(struct pblk *pblk)
 {
@@ -242,13 +258,16 @@ void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd,
 				struct pblk_c_ctx *c_ctx)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
-
-	static long ended = 0;
-	ended++;;
-	printk(KERN_EMERG "RAIL pblk end w bio %d\n", ended);
+	struct pblk_line *line = pblk_line_get_data(pblk);
+	int i;
 
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
+	
+	for (i = 0; i < c_ctx->nr_valid; i++)
+		kref_put(&line->ref, pblk_line_put);
 
+//	static long end = 0;
+//	printk(KERN_EMERG "lin put %p %d\n", line, end++);}
 	bio_put(rqd->bio);
 	pblk_free_rqd(pblk, rqd, WRITE);
 }
@@ -351,15 +370,15 @@ int pblk_rail_submit_write(struct pblk *pblk)
 	int i;
 	struct nvm_rq *rqd;
 	struct bio *bio;
-
+	static int last_stripe = ~0x0;
 	stripe = pblk_rail_cur_stripe(pblk);
+
+	BUG_ON(last_stripe == stripe);
+	last_stripe = stripe;
 	good_psecs = pblk_rail_stripe_good_psecs(pblk, stripe);	     
-	printk(KERN_EMERG "submit RAIL write good %i\n", good_psecs);
+	static long rails = 0;
+	//printk(KERN_EMERG "sumbit rail good %d\n", good_psecs, rails++);
 	for (i = 0; i < good_psecs; i += pblk->min_write_pgs) {
-		static long started = 0;
-		started++;
-		printk(KERN_EMERG "RAILstarted bio %d\n", started);
-		
 		rqd = pblk_alloc_rqd(pblk, WRITE);
 		if (IS_ERR(rqd)) {
 			pr_err("pblk: cannot allocate parity write req.\n");
@@ -385,7 +404,9 @@ int pblk_rail_submit_write(struct pblk *pblk)
 			return 1;
 		}
 	}
-
+	struct pblk_line *line = pblk_line_get_data(pblk);
+	//xsprintk(KERN_EMERG "cur %d rb space %d\n", line->cur_sec, pblk_rb_space(&pblk->rwb));
+	BUG_ON((line->cur_sec % pblk_rail_sec_per_stripe(pblk)) != 0);
 	return 0;
 }
 /*
@@ -515,17 +536,11 @@ u64 __pblk_rail_alloc_page(struct pblk *pblk, struct pblk_line *line,
 
 	/* Skip bad blocks and track them in sec2rb */
 	while (1) {
-		BUG_ON(pblk_rail_sched_parity(pblk));
-/*
-		if (pblk_rail_sched_parity(pblk, line->cur_sec)) {
-			pblk_rail_write_parity(pblk, line, sentry);
-			printk(KERN_EMERG "rail is parity %d\n", line->cur_sec);
-		}
-		else */
+//		BUG_ON(pblk_rail_sched_parity(pblk));
 		if(test_bit(line->cur_sec, line->map_bitmap)) {
 			int stride = pblk_rail_sec_to_stride(pblk, line->cur_sec);
 			int idx = pblk_rail_sec_to_idx(pblk, line->cur_sec);
-			//printk(KERN_EMERG "test bit str %d idx %d\n", stride, idx);
+			printk(KERN_EMERG "test bit str %d idx %d\n", stride, idx);
 			pblk->rail.sec2rb[stride][idx] = PBLK_RAIL_BAD_SEC;
 		}		
 		else {

@@ -61,6 +61,11 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 				meta_list[i].lba = cpu_to_le64(w_ctx->lba);
 				lba_list[paddr] = cpu_to_le64(w_ctx->lba);
 			}
+			else{
+//				static long beg = 0;
+//				printk(KERN_EMERG "lin get %p %d\n", line, beg++);
+				line->rail_parity_secs--;
+			}
 		} else {
 			__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
 

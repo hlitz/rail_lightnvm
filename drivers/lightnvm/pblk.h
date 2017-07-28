@@ -442,6 +442,7 @@ struct pblk_line {
 	int stripe_off;                 /* Position within the current stripe */
 	unsigned long *stripe_bitmap;   /* Bad block bitmap of the current stripe */
 
+	unsigned int rail_parity_secs;  /* RAIL parity secs in line */
 };
 
 #define PBLK_DATA_LINES 4
