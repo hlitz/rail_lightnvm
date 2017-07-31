@@ -1,3 +1,18 @@
+/*
+ * Copyright (C) 2017 Heiner Litz <hlitz@ucsc.edu>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License version
+ * 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * pblk-rail.c - pblk's RAIL path
+ */
+
 #include "pblk.h"
 #include <linux/log2.h>
 
@@ -133,24 +148,6 @@ unsigned int pblk_rail_wrap_lun(struct pblk *pblk, unsigned int lun)
 	return (lun & (geo->nr_luns - 1));
 }
 
-/* Returns the other LUNs part of the same RAIL stride */
-void pblk_rail_lun_neighbors(struct pblk *pblk, struct ppa_addr ppa,
-			     struct ppa_addr *neighbors)
-{
-	unsigned int lun_id = pblk_dev_ppa_to_lun(ppa);
-	unsigned int strides = pblk_rail_nr_parity_luns(pblk);
-	unsigned int i;
-	printk(KERN_EMERG "orig lun %i\n", lun_id);
-	for (i = 0; i < (pblk->rail.stride_width - 1); i++) {
-		unsigned int neighbor;
-
-		neighbor = pblk_rail_wrap_lun(pblk, lun_id + i * strides);
-		printk(KERN_EMERG "neighbou %i\n", neighbor);
-		pblk_dev_ppa_set_lun(&ppa, neighbor);
-		neighbors[i] = ppa;
-	}
-}
-
 unsigned int pblk_rail_sec_to_stride(struct pblk *pblk, unsigned int sec)
 {
 	//printk(KERN_EMERG "sec %d / %d all %d\n", sec , sec / pblk->min_write_pgs, (sec % (pblk_rail_psec_per_stripe(pblk) * pblk->min_write_pgs)) / pblk->min_write_pgs);
@@ -245,7 +242,7 @@ int pblk_rail_init(struct pblk *pblk)
 	return 0;
 }
 
-void pblk_rail_gen_parity(void *dest, void *src)
+void pblk_rail_compute_parity(void *dest, void *src)
 {
 	unsigned int i;
 	
@@ -347,7 +344,7 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 				
 				pos = pblk->rail.sec2rb[stride][i] + sec;
 				rb_addr = pblk->rwb.entries[pos].data;
-				pblk_rail_gen_parity(page_addr, rb_addr);
+				pblk_rail_compute_parity(page_addr, rb_addr);
 			}		
 		}
 /*		
@@ -455,7 +452,7 @@ bool pblk_rail_parity_to_bio(pblk, rqd, bio, pos)
 
 		for (rb_idx = base; rb_idx < (base + psecs); rb_idx++) {
 			if (pblk->parity_rb[rb_idx])
-				pblk_rail_gen_parity(page_addr, pblk->parity_rb[rb_idx]);
+				pblk_rail_compute_parity(page_addr, pblk->parity_rb[rb_idx]);
 			
 		}
 	} 
@@ -585,7 +582,185 @@ u64 pblk_rail_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
 }
 			
 /* Read Path */
-unsigned long * pblk_rail_alloc_bitmap(void)
+static void pblk_end_io_read(struct nvm_rq *rqd)
 {
-	return NULL;	
+	/* Fill the holes in the original bio */
+	i = 0;
+	hole = find_first_zero_bit(read_bitmap, nr_secs);
+	do {
+		src_bv = new_bio->bi_io_vec[i++];
+		dst_bv = bio->bi_io_vec[bio_init_idx + hole];
+
+		src_p = kmap_atomic(src_bv.bv_page);
+		dst_p = kmap_atomic(dst_bv.bv_page);
+
+		memcpy(dst_p + dst_bv.bv_offset,
+			src_p + src_bv.bv_offset,
+			PBLK_EXPOSED_PAGE_SIZE);
+
+		kunmap_atomic(src_p);
+		kunmap_atomic(dst_p);
+
+		mempool_free(src_bv.bv_page, pblk->page_pool);
+
+		hole = find_next_zero_bit(read_bitmap, nr_secs, hole + 1);
+	} while (hole < nr_secs);
+
+
+	struct pblk *pblk = rqd->private;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
+	struct bio *bio = rqd->bio;
+
+	if (rqd->error)
+		pblk_log_read_err(pblk, rqd);
+#ifdef CONFIG_NVM_DEBUG
+	else
+		WARN_ONCE(bio->bi_status, "pblk: corrupted read error\n");
+#endif
+
+	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
+
+	bio_put(bio);
+
+#ifdef CONFIG_NVM_DEBUG
+	atomic_long_add(rqd->nr_ppas, &pblk->sync_reads);
+	atomic_long_sub(rqd->nr_ppas, &pblk->inflight_reads);
+#endif
+
+	pblk_free_rqd(pblk, rqd, READ);
+	atomic_dec(&pblk->inflight_io);
+}
+
+/* Converts original ppa into ppa list of RAIL reads */
+void pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
+			  struct ppa_addr *rail_ppas)
+{
+	unsigned int lun_id = pblk_dev_ppa_to_lun(ppa);
+	unsigned int strides = pblk_rail_nr_parity_luns(pblk);
+	unsigned int i;
+	printk(KERN_EMERG "orig lun %i\n", lun_id);
+	for (i = 0; i < (pblk->rail.stride_width - 1); i++) {
+		unsigned int neighbor;
+
+		neighbor = pblk_rail_wrap_lun(pblk, lun_id + i * strides);
+		printk(KERN_EMERG "neighbou %i\n", neighbor);
+		pblk_dev_ppa_set_lun(&ppa, neighbor);
+		rail_ppas[i] = ppa;
+	}
+}
+
+static int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
+				      unsigned int bio_init_idx,
+				      unsigned long *read_bitmap)
+{
+	struct bio *new_bio, *bio = rqd->bio;
+	struct bio_vec src_bv, dst_bv;
+	void *ppa_ptr = NULL;
+	void *src_p, *dst_p;
+	dma_addr_t dma_ppa_list = 0;
+	int nr_secs = rqd->nr_ppas;
+	int nr_holes = nr_secs - bitmap_weight(read_bitmap, nr_secs);
+	int i, ret, hole;
+	DECLARE_COMPLETION_ONSTACK(wait);
+
+	new_bio = bio_alloc(GFP_KERNEL, nr_holes);
+	if (!new_bio) {
+		pr_err("pblk: could not alloc read bio\n");
+		return NVM_IO_ERR;
+	}
+
+	if (pblk_bio_add_pages(pblk, new_bio, GFP_KERNEL, nr_holes))
+		goto err;
+
+	if (nr_holes != new_bio->bi_vcnt) {
+		pr_err("pblk: malformed bio\n");
+		goto err;
+	}
+
+	new_bio->bi_iter.bi_sector = 0; /* internal bio */
+	bio_set_op_attrs(new_bio, REQ_OP_READ, 0);
+	new_bio->bi_private = &wait;
+	new_bio->bi_end_io = pblk_end_bio_sync;
+
+	rqd->bio = new_bio;
+	rqd->nr_ppas = nr_holes;
+	rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_RANDOM);
+	rqd->end_io = NULL;
+
+	if (unlikely(nr_secs > 1 && nr_holes == 1)) {
+		ppa_ptr = rqd->ppa_list;
+		dma_ppa_list = rqd->dma_ppa_list;
+		rqd->ppa_addr = rqd->ppa_list[0];
+	}
+
+	ret = pblk_submit_read_io(pblk, rqd);
+	if (ret) {
+		bio_put(rqd->bio);
+		pr_err("pblk: read IO submission failed\n");
+		goto err;
+	}
+
+	if (!wait_for_completion_io_timeout(&wait,
+				msecs_to_jiffies(PBLK_COMMAND_TIMEOUT_MS))) {
+		pr_err("pblk: partial read I/O timed out\n");
+	}
+
+	if (rqd->error) {
+		atomic_long_inc(&pblk->read_failed);
+#ifdef CONFIG_NVM_DEBUG
+		pblk_print_failed_rqd(pblk, rqd, rqd->error);
+#endif
+	}
+
+	if (unlikely(nr_secs > 1 && nr_holes == 1)) {
+		rqd->ppa_list = ppa_ptr;
+		rqd->dma_ppa_list = dma_ppa_list;
+	}
+
+	/* Fill the holes in the original bio */
+	i = 0;
+	hole = find_first_zero_bit(read_bitmap, nr_secs);
+	do {
+		swidth = pblk->rail.stride_width - 1;
+
+		dst_bv = bio->bi_io_vec[bio_init_idx + hole];
+		dst_p = kmap_atomic(dst_bv.bv_page);
+		memset(dst_p + dst_bv.bv_offset, 0, PBLK_EXPOSED_PAGE_SIZE);
+
+		for (r = 0; r < swidth; r++) {
+			src_bv = new_bio->bi_io_vec[i * swidth + r];
+			src_p = kmap_atomic(src_bv.bv_page);
+
+			pblk_rail_compute_parity(dst_p + dst_bv.bv_offset,
+						 src_p + src_bv.bv_offset);
+			
+			kunmap_atomic(src_p);
+		}
+
+		kunmap_atomic(dst_p);
+
+		mempool_free(src_bv.bv_page, pblk->page_pool);
+		
+		i++;
+		hole = find_next_zero_bit(read_bitmap, nr_secs, hole + 1);
+	} while (hole < nr_secs);
+
+	bio_put(new_bio);
+
+	/* Complete the original bio and associated request */
+/*	rqd->bio = bio;
+	rqd->nr_ppas = nr_secs;
+	rqd->private = pblk;
+
+	bio_endio(bio);
+	pblk_end_io_read(rqd);*/
+	return NVM_IO_OK;
+
+err:
+	/* Free allocated pages in new bio */
+	pblk_bio_free_pages(pblk, bio, 0, new_bio->bi_vcnt);
+	rqd->private = pblk;
+	pblk_end_io_read(rqd);
+	return NVM_IO_ERR;
 }

@@ -37,15 +37,17 @@ static int pblk_read_from_cache(struct pblk *pblk, struct bio *bio,
 	return pblk_rb_copy_to_bio(&pblk->rwb, bio, lba, ppa, bio_iter);
 }
 
-static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
-				 unsigned long *read_bitmap)
+static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_req *rqd, 
+				 unsigned long *read_bitmap,
+				 struct ppa_addr *rail_ppa_list, 
+				 unsigned long *rail_bitmap)
 {
 	struct bio *bio = rqd->bio;
 	struct ppa_addr ppas[PBLK_MAX_REQ_ADDRS];
 	sector_t blba = pblk_get_lba(bio);
 	int nr_secs = rqd->nr_ppas;
 	int advanced_bio = 0;
-	int i, j = 0;
+	int i, j, k = 0;
 
 	/* logic error: lba out-of-bounds. Ignore read request */
 	if (blba + nr_secs >= pblk->rl.nr_secs) {
@@ -78,7 +80,14 @@ retry:
 #ifdef CONFIG_NVM_DEBUG
 			atomic_long_inc(&pblk->cache_reads);
 #endif
-		} else {
+		} else if (pblk_rail_lun_busy(pblk, p)) {
+			pblk_rail_setup_ppas(pblk, p, &rail_ppa_list[k]);
+			k += pblk->rail.stride_width - 1;
+			BUG_ON(k > 64); /* TODO split if rail_ppas > max_ppas */
+			WARN_ON(test_and_set_bit(i, rail_bitmap));
+			advanced_bio = 1;
+		} 
+		else {
 			/* Read from media non-cached sectors */
 			rqd->ppa_list[j++] = p;
 		}
@@ -86,7 +95,7 @@ retry:
 		if (advanced_bio)
 			bio_advance(bio, PBLK_EXPOSED_PAGE_SIZE);
 	}
-
+	
 	if (pblk_io_aligned(pblk, nr_secs))
 		rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_SEQUENTIAL);
 	else
@@ -253,8 +262,9 @@ err:
 	return NVM_IO_ERR;
 }
 
-static void pblk_read_rq(struct pblk *pblk, struct nvm_rq *rqd,
-			 unsigned long *read_bitmap)
+static void pblk_read_rq(struct pblk *pblk, struct nvm_rq *rqd, 
+			 unsigned long *read_bitmap,
+			 ppa_addr *rail_ppa_list, unsigned long *rail_bitmap)
 {
 	struct bio *bio = rqd->bio;
 	struct ppa_addr ppa;
@@ -290,6 +300,9 @@ retry:
 #ifdef CONFIG_NVM_DEBUG
 			atomic_long_inc(&pblk->cache_reads);
 #endif
+	} else if (pblk_rail_lun_busy(ppa)) {
+		pblk_rail_setup_ppas(pblk, ppa, &rail_ppa_list[k]);
+		WARN_ON(test_and_set_bit(0, rail_bitmap));
 	} else {
 		rqd->ppa_addr = ppa;
 	}
@@ -378,6 +391,14 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		return NVM_IO_OK;
 	}
 
+	/* The read bio request RAIL reads to be filled.
+	 */
+	ret = pblk_rail_read_bio(pblk, rqd, bio_init_idx, &rail_bitmap);
+	if (ret) {
+		pr_err("pblk: failed to perform RAIL read\n");
+		return ret;
+	}
+	
 	/* The read bio request could be partially filled by the write buffer,
 	 * but there are some holes that need to be read from the drive.
 	 */
