@@ -858,6 +858,15 @@ unsigned int pblk_rail_stripe_per_line(struct pblk *pblk);
 unsigned int pblk_rail_sec_per_stripe(struct pblk *pblk);
 unsigned int pblk_rail_dsec_per_stripe(struct pblk *pblk);
 unsigned int pblk_rail_psec_per_stripe(struct pblk *pblk);
+int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa);
+void pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
+			  struct ppa_addr *rail_ppas);
+int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
+		       unsigned int bio_init_idx,
+		       unsigned long *read_bitmap);
+int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd);
+
+
 
 int pblk_gc_init(struct pblk *pblk);
 void pblk_gc_exit(struct pblk *pblk);

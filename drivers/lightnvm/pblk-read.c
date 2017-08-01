@@ -37,7 +37,7 @@ static int pblk_read_from_cache(struct pblk *pblk, struct bio *bio,
 	return pblk_rb_copy_to_bio(&pblk->rwb, bio, lba, ppa, bio_iter);
 }
 
-static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_req *rqd, 
+static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd, 
 				 unsigned long *read_bitmap,
 				 struct ppa_addr *rail_ppa_list, 
 				 unsigned long *rail_bitmap)
@@ -47,7 +47,7 @@ static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_req *rqd,
 	sector_t blba = pblk_get_lba(bio);
 	int nr_secs = rqd->nr_ppas;
 	int advanced_bio = 0;
-	int i, j, k = 0;
+	int i, j = 0, k = 0;
 
 	/* logic error: lba out-of-bounds. Ignore read request */
 	if (blba + nr_secs >= pblk->rl.nr_secs) {
@@ -106,7 +106,7 @@ retry:
 #endif
 }
 
-static int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd)
+int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	int err;
 
@@ -264,7 +264,8 @@ err:
 
 static void pblk_read_rq(struct pblk *pblk, struct nvm_rq *rqd, 
 			 unsigned long *read_bitmap,
-			 ppa_addr *rail_ppa_list, unsigned long *rail_bitmap)
+			 struct ppa_addr *rail_ppa_list, 
+			 unsigned long *rail_bitmap)
 {
 	struct bio *bio = rqd->bio;
 	struct ppa_addr ppa;
@@ -300,8 +301,8 @@ retry:
 #ifdef CONFIG_NVM_DEBUG
 			atomic_long_inc(&pblk->cache_reads);
 #endif
-	} else if (pblk_rail_lun_busy(ppa)) {
-		pblk_rail_setup_ppas(pblk, ppa, &rail_ppa_list[k]);
+	} else if (pblk_rail_lun_busy(pblk, ppa)) {
+		pblk_rail_setup_ppas(pblk, ppa, &rail_ppa_list[0]);
 		WARN_ON(test_and_set_bit(0, rail_bitmap));
 	} else {
 		rqd->ppa_addr = ppa;
@@ -316,6 +317,8 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	unsigned int nr_secs = pblk_get_secs(bio);
 	struct nvm_rq *rqd;
 	unsigned long read_bitmap; /* Max 64 ppas per request */
+	unsigned long rail_bitmap; 
+	struct ppa_addr rail_ppa_list[64 * (pblk->rail.stride_width - 1)];
 	unsigned int bio_init_idx;
 	int ret = NVM_IO_ERR;
 
@@ -352,9 +355,10 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;
 		rqd->dma_ppa_list = rqd->dma_meta_list + pblk_dma_meta_size;
 
-		pblk_read_ppalist_rq(pblk, rqd, &read_bitmap);
+		pblk_read_ppalist_rq(pblk, rqd, &read_bitmap, rail_ppa_list, 
+				     &rail_bitmap);
 	} else {
-		pblk_read_rq(pblk, rqd, &read_bitmap);
+		pblk_read_rq(pblk, rqd, &read_bitmap, rail_ppa_list, &rail_bitmap);
 	}
 
 	bio_get(bio);

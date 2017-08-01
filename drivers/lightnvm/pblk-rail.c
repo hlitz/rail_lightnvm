@@ -260,9 +260,9 @@ void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd,
 
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
 	
-	for (i = 0; i < c_ctx->nr_valid; i++)
-		kref_put(&line->ref, pblk_line_put);
-
+//	for (i = 0; i < c_ctx->nr_valid; i++)
+		//	kref_put(&line->ref, pblk_line_put);
+	//printk(KERN_EMERG "refs %d\n", line->ref);
 //	static long end = 0;
 //	printk(KERN_EMERG "lin put %p %d\n", line, end++);}
 	bio_put(rqd->bio);
@@ -373,8 +373,7 @@ int pblk_rail_submit_write(struct pblk *pblk)
 	BUG_ON(last_stripe == stripe);
 	last_stripe = stripe;
 	good_psecs = pblk_rail_stripe_good_psecs(pblk, stripe);	     
-	static long rails = 0;
-	//printk(KERN_EMERG "sumbit rail good %d\n", good_psecs, rails++);
+	
 	for (i = 0; i < good_psecs; i += pblk->min_write_pgs) {
 		rqd = pblk_alloc_rqd(pblk, WRITE);
 		if (IS_ERR(rqd)) {
@@ -401,9 +400,9 @@ int pblk_rail_submit_write(struct pblk *pblk)
 			return 1;
 		}
 	}
-	struct pblk_line *line = pblk_line_get_data(pblk);
+	//struct pblk_line *line = pblk_line_get_data(pblk);
 	//xsprintk(KERN_EMERG "cur %d rb space %d\n", line->cur_sec, pblk_rb_space(&pblk->rwb));
-	BUG_ON((line->cur_sec % pblk_rail_sec_per_stripe(pblk)) != 0);
+	//BUG_ON((line->cur_sec % pblk_rail_sec_per_stripe(pblk)) != 0);
 	return 0;
 }
 /*
@@ -582,9 +581,9 @@ u64 pblk_rail_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
 }
 			
 /* Read Path */
-static void pblk_end_io_read(struct nvm_rq *rqd)
+/*static void pblk_end_io_read(struct nvm_rq *rqd)
 {
-	/* Fill the holes in the original bio */
+
 	i = 0;
 	hole = find_first_zero_bit(read_bitmap, nr_secs);
 	do {
@@ -630,27 +629,31 @@ static void pblk_end_io_read(struct nvm_rq *rqd)
 
 	pblk_free_rqd(pblk, rqd, READ);
 	atomic_dec(&pblk->inflight_io);
-}
+	}*/
 
 /* Converts original ppa into ppa list of RAIL reads */
 void pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 			  struct ppa_addr *rail_ppas)
 {
 	unsigned int lun_id = pblk_dev_ppa_to_lun(ppa);
+	//TODO lm num blocks / stide width
 	unsigned int strides = pblk_rail_nr_parity_luns(pblk);
 	unsigned int i;
-	printk(KERN_EMERG "orig lun %i\n", lun_id);
-	for (i = 0; i < (pblk->rail.stride_width - 1); i++) {
+
+	for (i = 0; i < pblk->rail.stride_width; i++) {
 		unsigned int neighbor;
 
 		neighbor = pblk_rail_wrap_lun(pblk, lun_id + i * strides);
+		if (neighbor == lun_id)
+			continue;
+
 		printk(KERN_EMERG "neighbou %i\n", neighbor);
 		pblk_dev_ppa_set_lun(&ppa, neighbor);
 		rail_ppas[i] = ppa;
 	}
 }
 
-static int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
+int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 				      unsigned int bio_init_idx,
 				      unsigned long *read_bitmap)
 {
@@ -722,12 +725,13 @@ static int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	i = 0;
 	hole = find_first_zero_bit(read_bitmap, nr_secs);
 	do {
-		swidth = pblk->rail.stride_width - 1;
+		unsigned int swidth = pblk->rail.stride_width - 1;
+		int r;
 
 		dst_bv = bio->bi_io_vec[bio_init_idx + hole];
 		dst_p = kmap_atomic(dst_bv.bv_page);
 		memset(dst_p + dst_bv.bv_offset, 0, PBLK_EXPOSED_PAGE_SIZE);
-
+		printk(KERN_EMERG "this actually happens\n");
 		for (r = 0; r < swidth; r++) {
 			src_bv = new_bio->bi_io_vec[i * swidth + r];
 			src_p = kmap_atomic(src_bv.bv_page);
@@ -736,12 +740,11 @@ static int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 						 src_p + src_bv.bv_offset);
 			
 			kunmap_atomic(src_p);
+			mempool_free(src_bv.bv_page, pblk->page_pool);
 		}
 
 		kunmap_atomic(dst_p);
 
-		mempool_free(src_bv.bv_page, pblk->page_pool);
-		
 		i++;
 		hole = find_next_zero_bit(read_bitmap, nr_secs, hole + 1);
 	} while (hole < nr_secs);
@@ -761,6 +764,7 @@ err:
 	/* Free allocated pages in new bio */
 	pblk_bio_free_pages(pblk, bio, 0, new_bio->bi_vcnt);
 	rqd->private = pblk;
-	pblk_end_io_read(rqd);
+	BUG();
+//pblk_end_io_read(rqd);
 	return NVM_IO_ERR;
 }
