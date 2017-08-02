@@ -80,7 +80,15 @@ retry:
 			atomic_long_inc(&pblk->cache_reads);
 #endif
 		} else {
+			int line_id = pblk_dev_ppa_to_line(p);
+			struct pblk_line *line = &pblk->lines[line_id];
+
 			/* Read from media non-cached sectors */
+			if (!kref_get_unless_zero(&line->ref)) {
+				pblk_lookup_l2p_seq(pblk, &p, lba, 1);
+				goto retry;
+			}
+
 			rqd->ppa_list[j++] = p;
 		}
 
@@ -110,9 +118,27 @@ static int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd)
 	return NVM_IO_OK;
 }
 
-static void pblk_end_io_read(struct nvm_rq *rqd)
+static void pblk_read_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd)
 {
-	struct pblk *pblk = rqd->private;
+	struct ppa_addr *ppa_list;
+	int i;
+
+	ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
+
+	for (i = 0; i < rqd->nr_ppas; i++) {
+		struct ppa_addr ppa = ppa_list[i];
+
+		if (!pblk_ppa_empty(ppa) && !pblk_addr_in_cache(ppa)) {
+			int line_id = pblk_dev_ppa_to_line(ppa);
+			struct pblk_line *line = &pblk->lines[line_id];
+
+			kref_put(&line->ref, pblk_line_put);
+		}
+	}
+}
+
+static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
+{
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = rqd->bio;
@@ -144,6 +170,14 @@ static void pblk_end_io_read(struct nvm_rq *rqd)
 
 	pblk_free_rqd(pblk, rqd, READ);
 	atomic_dec(&pblk->inflight_io);
+}
+
+static void pblk_end_io_read(struct nvm_rq *rqd)
+{
+	struct pblk *pblk = rqd->private;
+
+	pblk_read_put_rqd_kref(pblk, rqd);
+	__pblk_end_io_read(pblk, rqd);
 }
 
 static int pblk_fill_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
@@ -218,6 +252,11 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	i = 0;
 	hole = find_first_zero_bit(read_bitmap, nr_secs);
 	do {
+		int line_id = pblk_dev_ppa_to_line(rqd->ppa_list[hole]);
+		struct pblk_line *line = &pblk->lines[line_id];
+
+		kref_put(&line->ref, pblk_line_put);
+
 		src_bv = new_bio->bi_io_vec[i++];
 		dst_bv = bio->bi_io_vec[bio_init_idx + hole];
 
@@ -244,14 +283,14 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	rqd->private = pblk;
 
 	bio_endio(bio);
-	pblk_end_io_read(rqd);
+	__pblk_end_io_read(pblk, rqd);
 	return NVM_IO_OK;
 
 err:
 	/* Free allocated pages in new bio */
 	pblk_bio_free_pages(pblk, bio, 0, new_bio->bi_vcnt);
 	rqd->private = pblk;
-	pblk_end_io_read(rqd);
+	__pblk_end_io_read(pblk, rqd);
 	return NVM_IO_ERR;
 }
 
@@ -286,6 +325,14 @@ retry:
 			atomic_long_inc(&pblk->cache_reads);
 #endif
 	} else {
+		int line_id = pblk_dev_ppa_to_line(ppa);
+		struct pblk_line *line = &pblk->lines[line_id];
+
+		if (!kref_get_unless_zero(&line->ref)) {
+			pblk_lookup_l2p_seq(pblk, &ppa, lba, 1);
+			goto retry;
+		}
+
 		rqd->ppa_addr = ppa;
 	}
 
@@ -348,7 +395,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	if (bitmap_full(&read_bitmap, nr_secs)) {
 		bio_endio(bio);
 		atomic_inc(&pblk->inflight_io);
-		pblk_end_io_read(rqd);
+		__pblk_end_io_read(pblk, rqd);
 		return NVM_IO_OK;
 	}
 
