@@ -879,6 +879,7 @@ static void pblk_tear_down(struct pblk *pblk)
 {
 	pblk_pipeline_stop(pblk);
 	pblk_writer_stop(pblk);
+	pblk_rail_tear_down(pblk);
 	pblk_rb_sync_l2p(&pblk->rwb);
 	pblk_rwb_free(pblk);
 	pblk_rl_free(&pblk->rl);

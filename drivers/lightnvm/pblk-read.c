@@ -40,14 +40,15 @@ static int pblk_read_from_cache(struct pblk *pblk, struct bio *bio,
 static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd, 
 				 unsigned long *read_bitmap,
 				 struct ppa_addr *rail_ppa_list, 
-				 unsigned long *rail_bitmap)
+				 unsigned long *rail_bitmap,
+				 unsigned char *pvalid)
 {
 	struct bio *bio = rqd->bio;
 	struct ppa_addr ppas[PBLK_MAX_REQ_ADDRS];
 	sector_t blba = pblk_get_lba(bio);
 	int nr_secs = rqd->nr_ppas;
 	int advanced_bio = 0;
-	int i, j = 0, k = 0;
+	int i, j = 0, k = 0, v = 0;
 
 	/* logic error: lba out-of-bounds. Ignore read request */
 	if (blba + nr_secs >= pblk->rl.nr_secs) {
@@ -80,10 +81,13 @@ retry:
 #ifdef CONFIG_NVM_DEBUG
 			atomic_long_inc(&pblk->cache_reads);
 #endif
-		} else if (pblk_rail_lun_busy(pblk, p)) {
-			pblk_rail_setup_ppas(pblk, p, &rail_ppa_list[k]);
-			k += pblk->rail.stride_width - 1;
-			BUG_ON(k > 64); /* TODO split if rail_ppas > max_ppas */
+		} else if (pblk_rail_lun_busy(pblk, p) && 
+			   k + pblk->rail.stride_width - 1 <= 64) {
+			/* RAIL is best effort, perform normal reads in case of 
+			 * >64 RAIL ppas 
+			 */
+			k += pblk_rail_setup_ppas(pblk, p, &rail_ppa_list[k], 
+						  &pvalid[v++]);
 			WARN_ON(test_and_set_bit(i, rail_bitmap));
 			advanced_bio = 1;
 		} 
@@ -165,8 +169,9 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	int nr_secs = rqd->nr_ppas;
 	int nr_holes = nr_secs - bitmap_weight(read_bitmap, nr_secs);
 	int i, ret, hole;
-	DECLARE_COMPLETION_ONSTACK(wait);
 
+	DECLARE_COMPLETION_ONSTACK(wait);
+		
 	new_bio = bio_alloc(GFP_KERNEL, nr_holes);
 	if (!new_bio) {
 		pr_err("pblk: could not alloc read bio\n");
@@ -205,7 +210,7 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	}
 
 	if (!wait_for_completion_io_timeout(&wait,
-				msecs_to_jiffies(PBLK_COMMAND_TIMEOUT_MS))) {
+					    msecs_to_jiffies(PBLK_COMMAND_TIMEOUT_MS))) {
 		pr_err("pblk: partial read I/O timed out\n");
 	}
 
@@ -232,8 +237,8 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 		dst_p = kmap_atomic(dst_bv.bv_page);
 
 		memcpy(dst_p + dst_bv.bv_offset,
-			src_p + src_bv.bv_offset,
-			PBLK_EXPOSED_PAGE_SIZE);
+		       src_p + src_bv.bv_offset,
+		       PBLK_EXPOSED_PAGE_SIZE);
 
 		kunmap_atomic(src_p);
 		kunmap_atomic(dst_p);
@@ -265,7 +270,8 @@ err:
 static void pblk_read_rq(struct pblk *pblk, struct nvm_rq *rqd, 
 			 unsigned long *read_bitmap,
 			 struct ppa_addr *rail_ppa_list, 
-			 unsigned long *rail_bitmap)
+			 unsigned long *rail_bitmap,
+			 unsigned char *pvalid)
 {
 	struct bio *bio = rqd->bio;
 	struct ppa_addr ppa;
@@ -302,7 +308,7 @@ retry:
 			atomic_long_inc(&pblk->cache_reads);
 #endif
 	} else if (pblk_rail_lun_busy(pblk, ppa)) {
-		pblk_rail_setup_ppas(pblk, ppa, &rail_ppa_list[0]);
+		pblk_rail_setup_ppas(pblk, ppa, &rail_ppa_list[0], &pvalid[0]);
 		WARN_ON(test_and_set_bit(0, rail_bitmap));
 	} else {
 		rqd->ppa_addr = ppa;
@@ -315,10 +321,10 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	unsigned int nr_secs = pblk_get_secs(bio);
-	struct nvm_rq *rqd;
+	struct nvm_rq *rqd, *rail_rqd;
 	unsigned long read_bitmap; /* Max 64 ppas per request */
-	unsigned long rail_bitmap; 
-	struct ppa_addr rail_ppa_list[64 * (pblk->rail.stride_width - 1)];
+	unsigned long rail_bitmap;
+	unsigned char pvalid[PBLK_MAX_REQ_ADDRS]; 
 	unsigned int bio_init_idx;
 	int ret = NVM_IO_ERR;
 
@@ -326,11 +332,19 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		return NVM_IO_ERR;
 
 	bitmap_zero(&read_bitmap, nr_secs);
+	bitmap_zero(&rail_bitmap, nr_secs);
+	memset(pvalid, 0, PBLK_MAX_REQ_ADDRS);
 
 	rqd = pblk_alloc_rqd(pblk, READ);
 	if (IS_ERR(rqd)) {
 		pr_err_ratelimited("pblk: not able to alloc rqd");
 		return NVM_IO_ERR;
+	}
+
+	rail_rqd = pblk_alloc_rqd(pblk, READ);
+	if (IS_ERR(rail_rqd)) {
+		pr_err_ratelimited("pblk: not able to alloc rail rqd");
+		goto fail_rqd_free;
 	}
 
 	rqd->opcode = NVM_OP_PREAD;
@@ -345,20 +359,30 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	bio_init_idx = pblk_get_bi_idx(bio);
 
 	rqd->meta_list = nvm_dev_dma_alloc(dev->parent, GFP_KERNEL,
-							&rqd->dma_meta_list);
+					   &rqd->dma_meta_list);
 	if (!rqd->meta_list) {
 		pr_err("pblk: not able to allocate ppa list\n");
-		goto fail_rqd_free;
+		goto fail_rail_rqd_free;
 	}
+	
+	rail_rqd->meta_list = nvm_dev_dma_alloc(dev->parent, GFP_KERNEL,
+						&rail_rqd->dma_meta_list);
+	if (!rail_rqd->meta_list) {
+		pr_err("pblk: not able to allocate RAIL ppa list\n");
+		goto fail_meta_free;
+	}
+	rail_rqd->ppa_list = rail_rqd->meta_list + pblk_dma_meta_size;
+	rail_rqd->dma_ppa_list = rail_rqd->dma_meta_list + pblk_dma_meta_size;
 
 	if (nr_secs > 1) {
 		rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;
 		rqd->dma_ppa_list = rqd->dma_meta_list + pblk_dma_meta_size;
 
-		pblk_read_ppalist_rq(pblk, rqd, &read_bitmap, rail_ppa_list, 
-				     &rail_bitmap);
+		pblk_read_ppalist_rq(pblk, rqd, &read_bitmap, rail_rqd->ppa_list, 
+				     &rail_bitmap, pvalid);
 	} else {
-		pblk_read_rq(pblk, rqd, &read_bitmap, rail_ppa_list, &rail_bitmap);
+		pblk_read_rq(pblk, rqd, &read_bitmap, rail_rqd->ppa_list,
+			     &rail_bitmap, pvalid);
 	}
 
 	bio_get(bio);
@@ -366,11 +390,15 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		bio_endio(bio);
 		atomic_inc(&pblk->inflight_io);
 		pblk_end_io_read(rqd);
+		nvm_dev_dma_free(dev->parent, rail_rqd->meta_list, rail_rqd->dma_meta_list);
+		pblk_free_rqd(pblk, rail_rqd, READ);
+
 		return NVM_IO_OK;
 	}
 
 	/* All sectors are to be read from the device */
-	if (bitmap_empty(&read_bitmap, rqd->nr_ppas)) {
+	if (bitmap_empty(&read_bitmap, rqd->nr_ppas) && 
+	    bitmap_empty(&rail_bitmap, rqd->nr_ppas)) {
 		struct bio *int_bio = NULL;
 		struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 
@@ -378,7 +406,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		int_bio = bio_clone_fast(bio, GFP_KERNEL, pblk_bio_set);
 		if (!int_bio) {
 			pr_err("pblk: could not clone read bio\n");
-			return NVM_IO_ERR;
+			goto fail_rail_meta_free;
 		}
 
 		rqd->bio = int_bio;
@@ -389,20 +417,36 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 			pr_err("pblk: read IO submission failed\n");
 			if (int_bio)
 				bio_put(int_bio);
-			return ret;
+			goto fail_rail_meta_free;
 		}
+		nvm_dev_dma_free(dev->parent, rail_rqd->meta_list, rail_rqd->dma_meta_list);
+		pblk_free_rqd(pblk, rail_rqd, READ);
 
 		return NVM_IO_OK;
 	}
 
-	/* The read bio request RAIL reads to be filled.
+	/* The read bio requires RAIL reads to be fullfilled.
 	 */
-	ret = pblk_rail_read_bio(pblk, rqd, bio_init_idx, &rail_bitmap);
-	if (ret) {
-		pr_err("pblk: failed to perform RAIL read\n");
-		return ret;
+	if (!bitmap_empty(&rail_bitmap, rqd->nr_ppas)) {
+		ret = pblk_rail_read_bio(pblk, rqd, bio_init_idx, &rail_bitmap,
+					 rail_rqd, pvalid);
+		if (ret) {
+			pr_err("pblk: failed to perform RAIL read\n");
+			goto fail_rail_meta_free;
+		}
 	}
-	
+	nvm_dev_dma_free(dev->parent, rail_rqd->meta_list, rail_rqd->dma_meta_list);
+	pblk_free_rqd(pblk, rail_rqd, READ);
+
+	bitmap_or(&read_bitmap, &read_bitmap, &rail_bitmap, rqd->nr_ppas);
+	if (bitmap_full(&read_bitmap, nr_secs)) {
+		bio_endio(bio);
+		atomic_inc(&pblk->inflight_io);
+		pblk_end_io_read(rqd);
+		
+		return NVM_IO_OK;
+	}
+
 	/* The read bio request could be partially filled by the write buffer,
 	 * but there are some holes that need to be read from the drive.
 	 */
@@ -414,9 +458,16 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 
 	return NVM_IO_OK;
 
+fail_rail_meta_free:
+	nvm_dev_dma_free(dev->parent, rail_rqd->meta_list, rail_rqd->dma_meta_list);
+fail_meta_free:
+	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
+fail_rail_rqd_free:
+	pblk_free_rqd(pblk, rail_rqd, READ);
 fail_rqd_free:
 	pblk_free_rqd(pblk, rqd, READ);
-	return ret;
+
+	return NVM_IO_ERR;
 }
 
 static int read_ppalist_rq_gc(struct pblk *pblk, struct nvm_rq *rqd,

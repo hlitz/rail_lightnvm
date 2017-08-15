@@ -229,6 +229,7 @@ static int __pblk_rb_update_l2p(struct pblk_rb *rb, unsigned int *l2p_upd,
 
 		line = &pblk->lines[pblk_tgt_ppa_to_line(w_ctx->ppa)];
 		kref_put(&line->ref, pblk_line_put);
+		//printk(KERN_EMERG "kref put %lu\n", READ_ONCE(line->ref.refcount));
 		clean_wctx(w_ctx);
 		*l2p_upd = (*l2p_upd + 1) & (rb->nr_entries - 1);
 	}

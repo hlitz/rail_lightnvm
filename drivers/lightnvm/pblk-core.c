@@ -887,7 +887,7 @@ int pblk_line_erase(struct pblk *pblk, struct pblk_line *line)
 
 		ppa = pblk->luns[bit].bppa; /* set ch and lun */
 		ppa.g.blk = line->id;
-
+		printk(KERN_EMERG "Erase block line id %d lun %d\n", line->id, bit);
 		atomic_dec(&line->left_eblks);
 		WARN_ON(test_and_set_bit(bit, line->erase_bitmap));
 		spin_unlock(&line->lock);
@@ -1471,7 +1471,7 @@ void pblk_line_put(struct kref *ref)
 	struct pblk_line *line = container_of(ref, struct pblk_line, ref);
 	struct pblk *pblk = line->pblk;
 	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
-
+	
 	spin_lock(&line->lock);
 	WARN_ON(line->state != PBLK_LINESTATE_GC);
 	line->state = PBLK_LINESTATE_FREE;
@@ -1704,6 +1704,8 @@ static void __pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list,
 		WARN_ON(ppa_list[0].g.lun != ppa_list[i].g.lun ||
 				ppa_list[0].g.ch != ppa_list[i].g.ch);
 #endif
+
+	//	while (pblk_rail_luns_busy(pblk, pos)) {}
 
 	ret = down_timeout(&rlun->wr_sem, msecs_to_jiffies(30000));
 	if (ret) {

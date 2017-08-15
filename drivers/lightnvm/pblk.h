@@ -244,10 +244,12 @@ struct pblk_gc {
 };
 
 struct pblk_rail {
-	unsigned int stride_width;
-	unsigned int **sec2rb;
-	struct page *pages;
-	void **data;
+	unsigned int stride_width;      /* RAIL stride width including parity */
+	struct pblk_line *prev_rq_line; /* Line of in-flight parity write */ 
+	unsigned int prev_nr_secs;      /* Number of sectors of in-flight parity write */
+	unsigned int **sec2rb;          /* Maps RAIL sectors to rb entries */
+	struct page *pages;             /* Pages to hold parity writes */
+	void **data;                    /* Data pointer to pages */
 };
 
 struct pblk_rl {
@@ -840,34 +842,6 @@ int pblk_recov_setup_rq(struct pblk *pblk, struct pblk_c_ctx *c_ctx,
 #define PBLK_GC_L_QD 4		/* Queue depth for inflight GC lines */
 #define PBLK_GC_RSV_LINE 1	/* Reserved lines for GC */
 
-/*
- * pblk rail
- */
-int pblk_rail_init(struct pblk *pblk);
-unsigned int pblk_rail_enabled(struct pblk *pblk);
-u64 pblk_rail_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
-			 unsigned int sentry);
-u64 __pblk_rail_alloc_page(struct pblk *pblk, struct pblk_line *line, 
-			   int nr_secs, unsigned int sentry);
-int pblk_rail_sched_io(struct pblk *pblk);
-int pblk_rail_sched_parity(struct pblk *pblk);
-int pblk_rail_submit_write(struct pblk *pblk);
-void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd, 
-				struct pblk_c_ctx *c_ctx);
-unsigned int pblk_rail_stripe_per_line(struct pblk *pblk);
-unsigned int pblk_rail_sec_per_stripe(struct pblk *pblk);
-unsigned int pblk_rail_dsec_per_stripe(struct pblk *pblk);
-unsigned int pblk_rail_psec_per_stripe(struct pblk *pblk);
-int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa);
-void pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
-			  struct ppa_addr *rail_ppas);
-int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
-		       unsigned int bio_init_idx,
-		       unsigned long *read_bitmap);
-int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd);
-
-
-
 int pblk_gc_init(struct pblk *pblk);
 void pblk_gc_exit(struct pblk *pblk);
 void pblk_gc_should_start(struct pblk *pblk);
@@ -903,6 +877,34 @@ int pblk_rl_is_limit(struct pblk_rl *rl);
  */
 int pblk_sysfs_init(struct gendisk *tdisk);
 void pblk_sysfs_exit(struct gendisk *tdisk);
+
+/*
+ * pblk rail
+ */
+#define PBLK_RAIL_BAD_SEC ~0x0
+#define PBLK_RAIL_PADDED_SEC (PBLK_RAIL_BAD_SEC - 1)
+#define BYTE_SHIFT 3
+
+int pblk_rail_init(struct pblk *pblk);
+void pblk_rail_tear_down(struct pblk *pblk);
+unsigned int pblk_rail_enabled(struct pblk *pblk);
+u64 pblk_rail_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
+			 unsigned int sentry);
+int pblk_rail_sched_parity(struct pblk *pblk);
+int pblk_rail_submit_write(struct pblk *pblk);
+void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd, 
+				struct pblk_c_ctx *c_ctx);
+unsigned int pblk_rail_sec_per_stripe(struct pblk *pblk);
+unsigned int pblk_rail_dsec_per_stripe(struct pblk *pblk);
+unsigned int pblk_rail_psec_per_stripe(struct pblk *pblk);
+int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa);
+int pblk_rail_luns_busy(struct pblk *pblk, int lun_id);
+int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
+			 struct ppa_addr *rail_ppas, unsigned char *pvalid);
+int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
+		       unsigned int bio_init_idx, unsigned long *read_bitmap,
+		       struct nvm_rq *rail_rqd, unsigned char *pvalid);
+int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd);
 
 static inline void *pblk_malloc(size_t size, int type, gfp_t flags)
 {

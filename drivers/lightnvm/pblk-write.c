@@ -30,7 +30,6 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 
 		w_ctx = pblk_rb_w_ctx(&pblk->rwb, c_ctx->sentry + i);
 		while ((original_bio = bio_list_pop(&w_ctx->bios))){
-			printk(KERN_EMERG "Ending orig bio %p\n", original_bio);
 			bio_endio(original_bio);
 		}
 	}
