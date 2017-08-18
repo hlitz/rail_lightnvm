@@ -1022,7 +1022,7 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	int nr_bb = 0;
 	u64 off;
 	int bit = -1;
-
+	printk(KERN_EMERG "Start Init BB\n");
 	line->sec_in_line = lm->sec_per_line;
 
 	/* Capture bad block information on line mapping bitmaps */
@@ -1047,12 +1047,12 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	line->sec_in_line -= lm->smeta_sec;
 	line->smeta_ssec = off;
 	line->cur_sec = off + lm->smeta_sec;
-
+	printk(KERN_EMERG "submit smeta io\n");
 	if (init && pblk_line_submit_smeta_io(pblk, line, off, WRITE)) {
 		pr_debug("pblk: line smeta I/O failed. Retry\n");
 		return 1;
 	}
-
+	printk(KERN_EMERG "done smeta\n");
 	bitmap_copy(line->invalid_bitmap, line->map_bitmap, lm->sec_per_line);
 
 	/* Mark emeta metadata sectors as bad sectors. We need to consider bad
@@ -1084,6 +1084,8 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 			
 			set = !test_and_set_bit(off + bit, line->invalid_bitmap);
 			line->rail_parity_secs += set;
+			if(set==0)
+			  printk(KERN_EMERG "set is zsero %i %i\n", off, bit);
 		}
 	}
 
@@ -1096,10 +1098,12 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 		
 		list_add_tail(&line->list, &l_mg->bad_list);
 		pr_err("pblk: unexpected line %d is bad\n", line->id);
+		printk(KERN_EMERG "sec %i lin %i weight %i parity %i\n", lm->sec_per_line , line->sec_in_line ,
+	    bitmap_weight(line->invalid_bitmap, lm->sec_per_line), line->rail_parity_secs);
 
 		return 0;
 	}
-
+	printk(KERN_EMERG "init BB END\n");
 	return 1;
 }
 

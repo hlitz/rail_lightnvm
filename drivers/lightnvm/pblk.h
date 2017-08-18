@@ -967,6 +967,11 @@ static inline void pblk_dev_ppa_set_lun(struct ppa_addr *p, int lun)
 	p->g.lun = lun;
 }
 
+static inline void pblk_dev_ppa_set_chnl(struct ppa_addr *p, int chnl)
+{
+	p->g.ch = chnl;
+}
+
 static inline int pblk_dev_ppa_to_lun(struct ppa_addr p)
 {
 	return p.g.lun;

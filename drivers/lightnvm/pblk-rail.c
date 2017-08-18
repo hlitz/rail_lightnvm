@@ -437,10 +437,12 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 	unsigned int blk_id = pblk_dev_ppa_to_lun(ppa);
 	unsigned int strides = pblk_rail_nr_parity_luns(pblk);
 	struct pblk_line *line = pblk_line_get_data(pblk);
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	unsigned int i, ppas = 0;
 
 	for (i = 0; i < pblk->rail.stride_width; i++) {
-		unsigned int neighbor;
+		unsigned int neighbor, lun, chnl, log_luns;
 
 		neighbor = pblk_rail_wrap_lun(pblk, blk_id + i * strides);
 		if (neighbor == blk_id)
@@ -449,10 +451,15 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 		/* Do not read from bad blocks */
 		if (test_bit(blk_id, line->blk_bitmap))
 			continue;
-
-		pblk_dev_ppa_set_lun(&ppa, neighbor);
+		
+		log_luns = ilog2(geo->luns_per_chnl);
+		lun = neighbor & (~0 >> (sizeof(lun) - log_luns)); 
+		chnl = neighbor >> log_luns;
+		pblk_dev_ppa_set_lun(&ppa, lun);
+		pblk_dev_ppa_set_chnl(&ppa, chnl);
 		rail_ppas[ppas++] = ppa;
 		(*pvalid)++; /* Valid (non-bb) reads in stride */
+		printk(KERN_EMERG "neighbor %i lun %i ch %i\n", neighbor, lun, chnl);
 	}
 
 	return ppas;
