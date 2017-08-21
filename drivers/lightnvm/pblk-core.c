@@ -421,42 +421,14 @@ int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd)
 
 struct bio *pblk_bio_map_addr(struct pblk *pblk, void *data,
 			      unsigned int nr_secs, unsigned int len,
-			      int alloc_type, gfp_t gfp_mask)
+			      int alloc_type, gfp_t gfp_mask, int reading)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
-	void *kaddr = data;
-	struct page *page;
-	struct bio *bio;
-	int i, ret;
 
 	if (alloc_type == PBLK_KMALLOC_META)
-		return bio_map_kern(dev->q, kaddr, len, gfp_mask);
+		return bio_map_kern(dev->q, data, len, gfp_mask);
 
-	bio = bio_kmalloc(gfp_mask, nr_secs);
-	if (!bio)
-		return ERR_PTR(-ENOMEM);
-
-	for (i = 0; i < nr_secs; i++) {
-		page = vmalloc_to_page(kaddr);
-		if (!page) {
-			pr_err("pblk: could not map vmalloc bio\n");
-			bio_put(bio);
-			bio = ERR_PTR(-ENOMEM);
-			goto out;
-		}
-
-		ret = bio_add_pc_page(dev->q, bio, page, PAGE_SIZE, 0);
-		if (ret != PAGE_SIZE) {
-			pr_err("pblk: could not add page to bio\n");
-			bio_put(bio);
-			bio = ERR_PTR(-ENOMEM);
-			goto out;
-		}
-
-		kaddr += PAGE_SIZE;
-	}
-out:
-	return bio;
+	return bio_copy_kern(dev->q, data, len, GFP_KERNEL, reading);
 }
 
 int pblk_calc_secs(struct pblk *pblk, unsigned long secs_avail,
@@ -586,7 +558,7 @@ next_rq:
 	rq_len = rq_ppas * geo->sec_size;
 
 	bio = pblk_bio_map_addr(pblk, emeta_buf, rq_ppas, rq_len,
-					l_mg->emeta_alloc_type, GFP_KERNEL);
+			l_mg->emeta_alloc_type, GFP_KERNEL, dir == READ);
 	if (IS_ERR(bio)) {
 		ret = PTR_ERR(bio);
 		goto free_rqd_dma;
@@ -670,9 +642,6 @@ next_rq:
 	}
 	atomic_dec(&pblk->inflight_io);
 	reinit_completion(&wait);
-
-	if (likely(pblk->l_mg.emeta_alloc_type == PBLK_VMALLOC_META))
-		bio_put(bio);
 
 	if (rqd.error) {
 		if (dir == WRITE)

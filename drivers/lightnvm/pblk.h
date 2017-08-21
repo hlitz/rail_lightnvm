@@ -712,7 +712,7 @@ int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd);
 int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line);
 struct bio *pblk_bio_map_addr(struct pblk *pblk, void *data,
 			      unsigned int nr_secs, unsigned int len,
-			      int alloc_type, gfp_t gfp_mask);
+			      int alloc_type, gfp_t gfp_mask, int reading);
 struct pblk_line *pblk_line_get(struct pblk *pblk);
 struct pblk_line *pblk_line_get_first_data(struct pblk *pblk);
 void pblk_line_replace_data(struct pblk *pblk);

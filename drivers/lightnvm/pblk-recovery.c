@@ -342,7 +342,6 @@ static void pblk_end_io_recov(struct nvm_rq *rqd)
 
 	pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas);
 
-	bio_put(rqd->bio);
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
 	pblk_free_rqd(pblk, rqd, WRITE_INT);
 
@@ -411,7 +410,7 @@ next_pad_rq:
 	}
 
 	bio = pblk_bio_map_addr(pblk, data, rq_ppas, rq_len,
-						PBLK_VMALLOC_META, GFP_KERNEL);
+					PBLK_VMALLOC_META, GFP_KERNEL, 0);
 	if (IS_ERR(bio)) {
 		ret = PTR_ERR(bio);
 		goto fail_free_rqd;

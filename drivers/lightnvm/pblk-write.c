@@ -187,17 +187,12 @@ static void pblk_end_io_write_meta(struct nvm_rq *rqd)
 		pblk_log_write_err(pblk, rqd);
 		pr_err("pblk: metadata I/O failed. Line %d\n", line->id);
 	}
-#ifdef CONFIG_NVM_DEBUG
-	else
-		WARN_ONCE(rqd->bio->bi_status, "pblk: corrupted write error\n");
-#endif
 
 	sync = atomic_add_return(rqd->nr_ppas, &emeta->sync);
 	if (sync == emeta->nr_entries)
 		pblk_line_run_ws(pblk, line, NULL, pblk_line_close_ws,
 								pblk->close_wq);
 
-	bio_put(rqd->bio);
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
 	pblk_free_rqd(pblk, rqd, WRITE_INT);
 
@@ -382,7 +377,7 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 	data = ((void *)emeta->buf) + emeta->mem;
 
 	bio = pblk_bio_map_addr(pblk, data, rq_ppas, rq_len,
-					l_mg->emeta_alloc_type, GFP_KERNEL);
+				l_mg->emeta_alloc_type, GFP_KERNEL, 0);
 	if (IS_ERR(bio)) {
 		ret = PTR_ERR(bio);
 		goto fail_free_rqd;
