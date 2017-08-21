@@ -84,6 +84,7 @@ void __pblk_map_invalidate(struct pblk *pblk, struct pblk_line *line,
 	}
 
 	if (test_and_set_bit(paddr, line->invalid_bitmap)) {
+	  printk(KERN_EMERG "Double invalidate paddr %lu \n", paddr);
 		WARN_ONCE(1, "pblk: double invalidate\n");
 		spin_unlock(&line->lock);
 		return;
@@ -509,9 +510,10 @@ u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs)
 
 	line->cur_sec = addr = find_next_zero_bit(line->map_bitmap,
 					pblk->lm.sec_per_line, line->cur_sec);
-	for (i = 0; i < nr_secs; i++, line->cur_sec++)
+	for (i = 0; i < nr_secs; i++, line->cur_sec++) {
 		WARN_ON(test_and_set_bit(line->cur_sec, line->map_bitmap));
-
+		BUG_ON(!test_bit(line->cur_sec, line->invalid_bitmap));
+	}
 	return addr;
 }
 

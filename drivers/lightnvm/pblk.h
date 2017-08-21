@@ -243,11 +243,16 @@ struct pblk_gc {
 	spinlock_t r_lock;
 };
 
+struct sec2rb_entry {
+	unsigned int pos;               /* Position in the ring buffer */
+	unsigned char nr_valid;         /* Non-padded (flush), valid sectors */
+};
+
 struct pblk_rail {
 	unsigned int stride_width;      /* RAIL stride width including parity */
 	struct pblk_line *prev_rq_line; /* Line of in-flight parity write */ 
 	unsigned int prev_nr_secs;      /* Number of sectors of in-flight parity write */
-	unsigned int **sec2rb;          /* Maps RAIL sectors to rb entries */
+	struct sec2rb_entry **sec2rb;   /* Maps RAIL sectors to rb pos */
 	struct page *pages;             /* Pages to hold parity writes */
 	void **data;                    /* Data pointer to pages */
 };
@@ -889,7 +894,7 @@ int pblk_rail_init(struct pblk *pblk);
 void pblk_rail_tear_down(struct pblk *pblk);
 unsigned int pblk_rail_enabled(struct pblk *pblk);
 u64 pblk_rail_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
-			 unsigned int sentry);
+			 int nr_valid, unsigned int sentry);
 int pblk_rail_sched_parity(struct pblk *pblk);
 int pblk_rail_submit_write(struct pblk *pblk);
 void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd, 

@@ -37,7 +37,8 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 		if (pblk_rail_sched_parity(pblk))
 			paddr = pblk_alloc_page(pblk, line, nr_secs);
 		else
-			paddr = pblk_rail_alloc_page(pblk, line, nr_secs, sentry);
+			paddr = pblk_rail_alloc_page(pblk, line, nr_secs, 
+						     valid_secs, sentry);
 	} else
 		paddr = pblk_alloc_page(pblk, line, nr_secs);
 
