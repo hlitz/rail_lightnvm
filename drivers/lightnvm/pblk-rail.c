@@ -303,15 +303,17 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 
 		memset(pg_addr, 0, PAGE_SIZE);
 		for (i = 0; i < pblk->rail.stride_width - 1; i++) {
-			if (pblk->rail.sec2rb[stride][i] != PBLK_RAIL_BAD_SEC) {
+			if (pblk->rail.sec2rb[stride][i].pos != PBLK_RAIL_BAD_SEC) {
 				unsigned int pos; 
 				void *addr;
 				
 				/* Check if the sector was padded (flush). Skip 
 				 * as xor(x, 0) = x
 				 */
-				if (sec < pblk->rail.sec2rb[stride][i].valid) {
-					pos = pblk->rail.sec2rb[stride][i] + sec;
+				if (sec < pblk->rail.sec2rb[stride][i].nr_valid) 
+				{
+					pos = pblk->rail.sec2rb[stride][i].pos 
+						+ sec;
 					addr = pblk->rwb.entries[pos].data;
 					pblk_rail_compute_parity(pg_addr, addr);
 				}
@@ -538,7 +540,6 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	i = 0;
 	hole = find_first_bit(read_bitmap, nr_secs);
 	do {
-		unsigned int swidth = pblk->rail.stride_width - 1;
 		int r;
 
 		dst_bv = bio->bi_io_vec[bio_init_idx + hole];
