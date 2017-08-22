@@ -98,6 +98,7 @@ enum {
 };
 
 #define pblk_dma_meta_size (sizeof(struct pblk_sec_meta) * PBLK_MAX_REQ_ADDRS)
+#define pblk_dma_ppa_size (sizeof(u64) * PBLK_MAX_REQ_ADDRS)
 
 /* write buffer completion context */
 struct pblk_c_ctx {
@@ -112,6 +113,7 @@ struct pblk_c_ctx {
 /* generic context */
 struct pblk_g_ctx {
 	void *private;
+	u64 lba;
 };
 
 /* Pad context */
