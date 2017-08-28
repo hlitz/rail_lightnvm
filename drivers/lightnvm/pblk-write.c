@@ -186,9 +186,9 @@ static void pblk_end_io_write_meta(struct nvm_rq *rqd)
 	struct pblk_line *line = m_ctx->private;
 	struct pblk_emeta *emeta = line->emeta;
 	int sync;
-
+	
 	pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas);
-
+	
 	if (rqd->error) {
 		pblk_log_write_err(pblk, rqd);
 		pr_err("pblk: metadata I/O failed. Line %d\n", line->id);
@@ -216,7 +216,6 @@ int pblk_alloc_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 
-	/* Setup write request */
 	rqd->opcode = NVM_OP_PWRITE;
 	rqd->nr_ppas = nr_secs;
 	rqd->flags = pblk_set_progr_mode(pblk, WRITE);
@@ -339,7 +338,8 @@ static inline int pblk_valid_meta_ppa(struct pblk *pblk,
 	 * the distance to not be optimal, but allow metadata I/Os to succeed.
 	 */
 	ppa_opt = addr_to_gen_ppa(pblk, paddr + data_line->meta_distance, 0);
-	if (unlikely(ppa_opt.ppa == ppa.ppa)) {
+	if (unlikely(ppa_opt.ppa == ppa.ppa) || 
+	    unlikely((data_line->meta_distance % pblk->rail.stride_width) == 0)) {
 		data_line->meta_distance--;
 		return 0;
 	}
@@ -406,7 +406,8 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 
 	for (i = 0; i < rqd->nr_ppas; ) {
 		spin_lock(&meta_line->lock);
-		paddr = __pblk_alloc_page(pblk, meta_line, rq_ppas);
+		paddr = __pblk_alloc_page(pblk, meta_line, rq_ppas, rq_ppas, 0,
+					  false, false);
 		spin_unlock(&meta_line->lock);
 		for (j = 0; j < rq_ppas; j++, i++, paddr++)
 			rqd->ppa_list[i] = addr_to_gen_ppa(pblk, paddr, id);
@@ -422,7 +423,7 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 	}
 
 	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas);
-	
+
 	ret = pblk_submit_io(pblk, rqd);
 	if (ret) {
 		pr_err("pblk: emeta I/O submission failed: %d\n", ret);

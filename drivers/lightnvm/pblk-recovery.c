@@ -435,7 +435,8 @@ next_pad_rq:
 		struct ppa_addr ppa;
 		int pos;
 
-		w_ptr = pblk_alloc_page(pblk, line, pblk->min_write_pgs);
+		w_ptr = pblk_alloc_page(pblk, line, pblk->min_write_pgs, 0, 0,
+					false, false);
 		ppa = addr_to_pblk_ppa(pblk, w_ptr, line->id);
 		pos = pblk_ppa_to_pos(geo, ppa);
 
@@ -569,7 +570,8 @@ next_rq:
 		struct ppa_addr ppa;
 		int pos;
 
-		w_ptr = pblk_alloc_page(pblk, line, pblk->min_write_pgs);
+		w_ptr = pblk_alloc_page(pblk, line, pblk->min_write_pgs, 0, 0,
+					false, false);
 		ppa = addr_to_gen_ppa(pblk, w_ptr, line->id);
 		pos = pblk_dev_ppa_to_pos(geo, ppa);
 
@@ -708,7 +710,8 @@ next_rq:
 		struct ppa_addr ppa;
 		int pos;
 
-		paddr = pblk_alloc_page(pblk, line, pblk->min_write_pgs);
+		paddr = pblk_alloc_page(pblk, line, pblk->min_write_pgs, 0, 0,
+					false, false);
 		ppa = addr_to_gen_ppa(pblk, paddr, line->id);
 		pos = pblk_dev_ppa_to_pos(geo, ppa);
 

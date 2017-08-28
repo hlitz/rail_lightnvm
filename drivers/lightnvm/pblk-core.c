@@ -62,6 +62,7 @@ static void pblk_end_io_erase(struct nvm_rq *rqd)
 {
 	struct pblk *pblk = rqd->private;
 
+	pblk_up_page(pblk, &rqd->ppa_addr, rqd->nr_ppas);
 	__pblk_end_io_erase(pblk, rqd);
 	mempool_free(rqd, pblk->g_rq_pool);
 }
@@ -84,7 +85,6 @@ void __pblk_map_invalidate(struct pblk *pblk, struct pblk_line *line,
 	}
 
 	if (test_and_set_bit(paddr, line->invalid_bitmap)) {
-	  printk(KERN_EMERG "Double invalidate paddr %lu \n", paddr);
 		WARN_ONCE(1, "pblk: double invalidate\n");
 		spin_unlock(&line->lock);
 		return;
@@ -495,12 +495,17 @@ void pblk_dealloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs)
 		WARN_ON(!test_and_clear_bit(line->cur_sec, line->map_bitmap));
 }
 
-u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs)
+u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, 
+		      int nr_secs, int nr_valid, unsigned int sentry,
+		      int parity_write, int meta_write)
 {
 	u64 addr;
 	int i;
-
+	unsigned int min_secs = pblk->min_write_pgs;
+	
 	lockdep_assert_held(&line->lock);
+
+	BUG_ON(nr_secs != pblk->min_write_pgs);
 
 	/* logic error: ppa out-of-bounds. Prevent generating bad address */
 	if (line->cur_sec + nr_secs > pblk->lm.sec_per_line) {
@@ -508,16 +513,49 @@ u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs)
 		nr_secs = pblk->lm.sec_per_line - line->cur_sec;
 	}
 
-	line->cur_sec = addr = find_next_zero_bit(line->map_bitmap,
-					pblk->lm.sec_per_line, line->cur_sec);
+	/* Find next good block */
+	while (1) {
+		if(!test_bit(line->cur_sec, line->map_bitmap))
+			break;
+		
+		/* Track bad blocks for later RAIL parity computation */
+		pblk_rail_track_sec(pblk, line->cur_sec, 0, 0);	
+		
+		line->cur_sec += pblk->min_write_pgs;
+	}
+
+	addr = line->cur_sec;
+	min_secs = pblk->min_write_pgs;
+
 	for (i = 0; i < nr_secs; i++, line->cur_sec++) {
 		WARN_ON(test_and_set_bit(line->cur_sec, line->map_bitmap));
-		BUG_ON(!test_bit(line->cur_sec, line->invalid_bitmap));
+
+		/* Track rb position for later parity RAIL computation. 
+		 * Exclude meta writes as they are not latency critical.
+		 * nr_valid sectors equals min_write_pgs except for flushes.
+ 		 */ 
+		if ((i % pblk->min_write_pgs) == 0 && meta_write) 
+			pblk_rail_track_sec(pblk, line->cur_sec, 0, 0);
+		//pblk->rail.sec2rb[stride][idx].pos = PBLK_RAIL_BAD_SEC;
+		else if ((i % pblk->min_write_pgs) == 0 && !parity_write) 
+			pblk_rail_track_sec(pblk, line->cur_sec, nr_valid, sentry + i);
+/*	
+	unsigned int stride, idx, pos;
+			
+			stride  = pblk_rail_sec_to_stride(pblk, line->cur_sec);
+			idx = pblk_rail_sec_to_idx(pblk, line->cur_sec);
+			pos = pblk_rb_wrap_pos(&pblk->rwb, sentry + i);
+			pblk->rail.sec2rb[stride][idx].pos = pos;
+			pblk->rail.sec2rb[stride][idx].nr_valid = nr_valid;
+			}		*/
 	}
+
 	return addr;
 }
 
-u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs)
+u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, 
+			   int nr_secs, int nr_valid, unsigned int sentry,
+			   int parity_write, int meta_write)
 {
 	u64 addr;
 
@@ -525,7 +563,8 @@ u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs)
 	 * failed write buffer entries
 	 */
 	spin_lock(&line->lock);
-	addr = __pblk_alloc_page(pblk, line, nr_secs);
+	addr = __pblk_alloc_page(pblk, line, nr_secs, nr_valid, sentry, 
+				      parity_write, meta_write);
 	line->left_msecs -= nr_secs;
 	WARN(line->left_msecs < 0, "pblk: page allocation out of bounds\n");
 	spin_unlock(&line->lock);
@@ -618,7 +657,8 @@ next_rq:
 		rqd.flags = pblk_set_progr_mode(pblk, WRITE);
 		for (i = 0; i < rqd.nr_ppas; ) {
 			spin_lock(&line->lock);
-			paddr = __pblk_alloc_page(pblk, line, min);
+			paddr = __pblk_alloc_page(pblk, line, min, min, 0,
+						  false, true);
 			spin_unlock(&line->lock);
 			for (j = 0; j < min; j++, i++, paddr++) {
 				meta_list[i].lba = cpu_to_le64(ADDR_EMPTY);
@@ -626,6 +666,8 @@ next_rq:
 					addr_to_gen_ppa(pblk, paddr, id);
 			}
 		}
+		printk(KERN_EMERG "emeta nr %i\n", rqd.nr_ppas);
+		pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas);
 	} else {
 		for (i = 0; i < rqd.nr_ppas; ) {
 			struct ppa_addr ppa = addr_to_gen_ppa(pblk, paddr, id);
@@ -675,6 +717,10 @@ next_rq:
 				msecs_to_jiffies(PBLK_COMMAND_TIMEOUT_MS))) {
 		pr_err("pblk: emeta I/O timed out\n");
 	}
+	
+	if (dir == WRITE)
+		pblk_up_page(pblk, rqd.ppa_list, rqd.nr_ppas);
+
 	atomic_dec(&pblk->inflight_io);
 	reinit_completion(&wait);
 
@@ -780,6 +826,8 @@ static int pblk_line_submit_smeta_io(struct pblk *pblk, struct pblk_line *line,
 	 * the write thread is the only one sending write and erase commands,
 	 * there is no need to take the LUN semaphore.
 	 */
+	pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas);
+
 	ret = pblk_submit_io(pblk, &rqd);
 	if (ret) {
 		pr_err("pblk: smeta I/O submission failed: %d\n", ret);
@@ -791,6 +839,9 @@ static int pblk_line_submit_smeta_io(struct pblk *pblk, struct pblk_line *line,
 				msecs_to_jiffies(PBLK_COMMAND_TIMEOUT_MS))) {
 		pr_err("pblk: smeta I/O timed out\n");
 	}
+	
+	pblk_up_page(pblk, rqd.ppa_list, rqd.nr_ppas);
+	
 	atomic_dec(&pblk->inflight_io);
 
 	if (rqd.error) {
@@ -846,6 +897,8 @@ static int pblk_blk_erase_sync(struct pblk *pblk, struct ppa_addr ppa)
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
 	 */
+	pblk_down_page(pblk, &ppa, rqd.nr_ppas);
+	
 	ret = pblk_submit_io(pblk, &rqd);
 	if (ret) {
 		struct nvm_tgt_dev *dev = pblk->dev;
@@ -863,6 +916,7 @@ static int pblk_blk_erase_sync(struct pblk *pblk, struct ppa_addr ppa)
 				msecs_to_jiffies(PBLK_COMMAND_TIMEOUT_MS))) {
 		pr_err("pblk: sync erase timed out\n");
 	}
+	pblk_up_page(pblk, &ppa, rqd.nr_ppas);
 
 out:
 	rqd.private = pblk;
@@ -889,7 +943,7 @@ int pblk_line_erase(struct pblk *pblk, struct pblk_line *line)
 
 		ppa = pblk->luns[bit].bppa; /* set ch and lun */
 		ppa.g.blk = line->id;
-		printk(KERN_EMERG "Erase block line id %d lun %d\n", line->id, bit);
+
 		atomic_dec(&line->left_eblks);
 		WARN_ON(test_and_set_bit(bit, line->erase_bitmap));
 		spin_unlock(&line->lock);
@@ -1507,6 +1561,8 @@ int pblk_blk_erase_async(struct pblk *pblk, struct ppa_addr ppa)
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
 	 */
+	pblk_down_page(pblk, &ppa, rqd->nr_ppas);
+
 	err = pblk_submit_io(pblk, rqd);
 	if (err) {
 		struct nvm_tgt_dev *dev = pblk->dev;
@@ -1709,7 +1765,7 @@ static void __pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list,
 				ppa_list[0].g.ch != ppa_list[i].g.ch);
 #endif
 
-	//	while (pblk_rail_luns_busy(pblk, pos)) {}
+	while (pblk_rail_luns_busy(pblk, pos)) {}
 
 	ret = down_timeout(&rlun->wr_sem, msecs_to_jiffies(30000));
 	if (ret) {
@@ -1729,7 +1785,7 @@ void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	int pos = pblk_ppa_to_pos(geo, ppa_list[0]);
-
+		
 	__pblk_down_page(pblk, ppa_list, nr_ppas, pos);
 }
 

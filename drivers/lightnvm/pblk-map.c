@@ -33,14 +33,8 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 	int nr_secs = pblk->min_write_pgs;
 	int i;
 
-	if (pblk_rail_enabled(pblk)) {
-		if (pblk_rail_sched_parity(pblk))
-			paddr = pblk_alloc_page(pblk, line, nr_secs);
-		else
-			paddr = pblk_rail_alloc_page(pblk, line, nr_secs, 
-						     valid_secs, sentry);
-	} else
-		paddr = pblk_alloc_page(pblk, line, nr_secs);
+	paddr = pblk_alloc_page(pblk, line, nr_secs, valid_secs, sentry, 
+				rail_parity, false);
 
 	for (i = 0; i < nr_secs; i++, paddr++) {
 		/* ppa to be sent to the device */

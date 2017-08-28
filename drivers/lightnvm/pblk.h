@@ -758,8 +758,12 @@ void pblk_line_put(struct kref *ref);
 struct list_head *pblk_line_gc_list(struct pblk *pblk, struct pblk_line *line);
 u64 pblk_lookup_page(struct pblk *pblk, struct pblk_line *line);
 void pblk_dealloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
-u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
-u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
+u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs, 
+		    int nr_valid, unsigned int sentry, int parity_write, 
+		    int meta_write);
+u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
+		      int nr_valid, unsigned int sentry, int parity_write,
+		      int meta_write);
 int pblk_calc_secs(struct pblk *pblk, unsigned long secs_avail,
 		   unsigned long secs_to_flush);
 void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas);
@@ -895,6 +899,8 @@ void pblk_rail_tear_down(struct pblk *pblk);
 unsigned int pblk_rail_enabled(struct pblk *pblk);
 u64 pblk_rail_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
 			 int nr_valid, unsigned int sentry);
+void pblk_rail_track_sec(struct pblk *pblk, int cur_sec, int nr_valid, 
+			 int sentry); 
 int pblk_rail_sched_parity(struct pblk *pblk);
 int pblk_rail_submit_write(struct pblk *pblk);
 void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd, 
@@ -908,7 +914,7 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 			 struct ppa_addr *rail_ppas, unsigned char *pvalid);
 int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 		       unsigned int bio_init_idx, unsigned long *read_bitmap,
-		       struct nvm_rq *rail_rqd, unsigned char *pvalid);
+		       struct ppa_addr *rail_ppa_list, unsigned char *pvalid);
 int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd);
 
 static inline void *pblk_malloc(size_t size, int type, gfp_t flags)
@@ -1240,7 +1246,7 @@ static inline int pblk_io_aligned(struct pblk *pblk, int nr_secs)
 	return !(nr_secs % pblk->min_write_pgs);
 }
 
-#ifdef CONFIG_NVM_DEBUG
+//#ifdef CONFIG_NVM_DEBUG
 static inline void print_ppa(struct ppa_addr *p, char *msg, int error)
 {
 	if (p->c.is_cached) {
@@ -1253,7 +1259,7 @@ static inline void print_ppa(struct ppa_addr *p, char *msg, int error)
 			p->g.pg, p->g.pl, p->g.sec);
 	}
 }
-
+#ifdef CONFIG_NVM_DEBUG
 static inline void pblk_print_failed_rqd(struct pblk *pblk, struct nvm_rq *rqd,
 					 int error)
 {
