@@ -280,7 +280,7 @@ EXPORT_SYMBOL(blk_start_queue_async);
 void blk_start_queue(struct request_queue *q)
 {
 	lockdep_assert_held(q->queue_lock);
-	WARN_ON(!irqs_disabled());
+	WARN_ON(!in_interrupt() && !irqs_disabled());
 	WARN_ON_ONCE(q->mq_ops);
 
 	queue_flag_clear(QUEUE_FLAG_STOPPED, q);
@@ -1469,15 +1469,10 @@ static void add_acct_request(struct request_queue *q, struct request *rq,
 	__elv_add_request(q, rq, where);
 }
 
-static void part_round_stats_single(int cpu, struct hd_struct *part,
-				    unsigned long now)
+static void part_round_stats_single(struct request_queue *q, int cpu,
+				    struct hd_struct *part, unsigned long now,
+				    unsigned int inflight)
 {
-	int inflight;
-
-	if (now == part->stamp)
-		return;
-
-	inflight = part_in_flight(part);
 	if (inflight) {
 		__part_stat_add(cpu, part, time_in_queue,
 				inflight * (now - part->stamp));
@@ -1488,6 +1483,7 @@ static void part_round_stats_single(int cpu, struct hd_struct *part,
 
 /**
  * part_round_stats() - Round off the performance stats on a struct disk_stats.
+ * @q: target block queue
  * @cpu: cpu number for stats access
  * @part: target partition
  *
@@ -1502,13 +1498,31 @@ static void part_round_stats_single(int cpu, struct hd_struct *part,
  * /proc/diskstats.  This accounts immediately for all queue usage up to
  * the current jiffies and restarts the counters again.
  */
-void part_round_stats(int cpu, struct hd_struct *part)
+void part_round_stats(struct request_queue *q, int cpu, struct hd_struct *part)
 {
+	struct hd_struct *part2 = NULL;
 	unsigned long now = jiffies;
+	unsigned int inflight[2];
+	int stats = 0;
 
-	if (part->partno)
-		part_round_stats_single(cpu, &part_to_disk(part)->part0, now);
-	part_round_stats_single(cpu, part, now);
+	if (part->stamp != now)
+		stats |= 1;
+
+	if (part->partno) {
+		part2 = &part_to_disk(part)->part0;
+		if (part2->stamp != now)
+			stats |= 2;
+	}
+
+	if (!stats)
+		return;
+
+	part_in_flight(q, part, inflight);
+
+	if (stats & 2)
+		part_round_stats_single(q, cpu, part2, now, inflight[1]);
+	if (stats & 1)
+		part_round_stats_single(q, cpu, part, now, inflight[0]);
 }
 EXPORT_SYMBOL_GPL(part_round_stats);
 
@@ -1787,11 +1801,8 @@ static blk_qc_t blk_queue_bio(struct request_queue *q, struct bio *bio)
 
 	blk_queue_split(q, &bio);
 
-	if (bio_integrity_enabled(bio) && bio_integrity_prep(bio)) {
-		bio->bi_status = BLK_STS_IOERR;
-		bio_endio(bio);
+	if (!bio_integrity_prep(bio))
 		return BLK_QC_T_NONE;
-	}
 
 	if (op_is_flush(bio->bi_opf)) {
 		spin_lock_irq(q->queue_lock);
@@ -2434,8 +2445,8 @@ void blk_account_io_done(struct request *req)
 
 		part_stat_inc(cpu, part, ios[rw]);
 		part_stat_add(cpu, part, ticks[rw], duration);
-		part_round_stats(cpu, part);
-		part_dec_in_flight(part, rw);
+		part_round_stats(req->q, cpu, part);
+		part_dec_in_flight(req->q, part, rw);
 
 		hd_struct_put(part);
 		part_stat_unlock();
@@ -2492,8 +2503,8 @@ void blk_account_io_start(struct request *rq, bool new_io)
 			part = &rq->rq_disk->part0;
 			hd_struct_get(part);
 		}
-		part_round_stats(cpu, part);
-		part_inc_in_flight(part, rw);
+		part_round_stats(rq->q, cpu, part);
+		part_inc_in_flight(rq->q, part, rw);
 		rq->part = part;
 	}
 
@@ -3424,6 +3435,10 @@ EXPORT_SYMBOL(blk_finish_plug);
  */
 void blk_pm_runtime_init(struct request_queue *q, struct device *dev)
 {
+	/* not support for RQF_PM and ->rpm_status in blk-mq yet */
+	if (q->mq_ops)
+		return;
+
 	q->dev = dev;
 	q->rpm_status = RPM_ACTIVE;
 	pm_runtime_set_autosuspend_delay(q->dev, -1);

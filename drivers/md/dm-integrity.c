@@ -1105,10 +1105,13 @@ static void schedule_autocommit(struct dm_integrity_c *ic)
 static void submit_flush_bio(struct dm_integrity_c *ic, struct dm_integrity_io *dio)
 {
 	struct bio *bio;
-	spin_lock_irq(&ic->endio_wait.lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&ic->endio_wait.lock, flags);
 	bio = dm_bio_from_per_bio_data(dio, sizeof(struct dm_integrity_io));
 	bio_list_add(&ic->flush_bio_list, bio);
-	spin_unlock_irq(&ic->endio_wait.lock);
+	spin_unlock_irqrestore(&ic->endio_wait.lock, flags);
+
 	queue_work(ic->commit_wq, &ic->commit_work);
 }
 
@@ -1584,16 +1587,18 @@ retry:
 	if (likely(ic->mode == 'J')) {
 		if (dio->write) {
 			unsigned next_entry, i, pos;
-			unsigned ws, we;
+			unsigned ws, we, range_sectors;
 
-			dio->range.n_sectors = min(dio->range.n_sectors, ic->free_sectors);
+			dio->range.n_sectors = min(dio->range.n_sectors,
+						   ic->free_sectors << ic->sb->log2_sectors_per_block);
 			if (unlikely(!dio->range.n_sectors))
 				goto sleep;
-			ic->free_sectors -= dio->range.n_sectors;
+			range_sectors = dio->range.n_sectors >> ic->sb->log2_sectors_per_block;
+			ic->free_sectors -= range_sectors;
 			journal_section = ic->free_section;
 			journal_entry = ic->free_section_entry;
 
-			next_entry = ic->free_section_entry + dio->range.n_sectors;
+			next_entry = ic->free_section_entry + range_sectors;
 			ic->free_section_entry = next_entry % ic->journal_section_entries;
 			ic->free_section += next_entry / ic->journal_section_entries;
 			ic->n_uncommitted_sections += next_entry / ic->journal_section_entries;
@@ -1724,6 +1729,8 @@ static void pad_uncommitted(struct dm_integrity_c *ic)
 		wraparound_section(ic, &ic->free_section);
 		ic->n_uncommitted_sections++;
 	}
+	WARN_ON(ic->journal_sections * ic->journal_section_entries !=
+		(ic->n_uncommitted_sections + ic->n_committed_sections) * ic->journal_section_entries + ic->free_sectors);
 }
 
 static void integrity_commit(struct work_struct *w)
@@ -1818,6 +1825,9 @@ static void do_journal_write(struct dm_integrity_c *ic, unsigned write_start,
 {
 	unsigned i, j, n;
 	struct journal_completion comp;
+	struct blk_plug plug;
+
+	blk_start_plug(&plug);
 
 	comp.ic = ic;
 	comp.in_flight = (atomic_t)ATOMIC_INIT(1);
@@ -1941,6 +1951,8 @@ skip_io:
 	}
 
 	dm_bufio_write_dirty_buffers_async(ic->bufio);
+
+	blk_finish_plug(&plug);
 
 	complete_journal_op(&comp);
 	wait_for_completion_io(&comp.comp);
@@ -3016,6 +3028,11 @@ static int dm_integrity_ctr(struct dm_target *ti, unsigned argc, char **argv)
 		ti->error = "Block size doesn't match the information in superblock";
 		goto bad;
 	}
+	if (!le32_to_cpu(ic->sb->journal_sections)) {
+		r = -EINVAL;
+		ti->error = "Corrupted superblock, journal_sections is 0";
+		goto bad;
+	}
 	/* make sure that ti->max_io_len doesn't overflow */
 	if (ic->sb->log2_interleave_sectors < MIN_LOG2_INTERLEAVE_SECTORS ||
 	    ic->sb->log2_interleave_sectors > MAX_LOG2_INTERLEAVE_SECTORS) {
@@ -3038,6 +3055,11 @@ static int dm_integrity_ctr(struct dm_target *ti, unsigned argc, char **argv)
 	r = calculate_device_limits(ic);
 	if (r) {
 		ti->error = "The device is too small";
+		goto bad;
+	}
+	if (ti->len > ic->provided_data_sectors) {
+		r = -EINVAL;
+		ti->error = "Not enough provided sectors for requested mapping size";
 		goto bad;
 	}
 

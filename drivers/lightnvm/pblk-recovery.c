@@ -342,9 +342,8 @@ static void pblk_end_io_recov(struct nvm_rq *rqd)
 
 	pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas);
 
-	bio_put(rqd->bio);
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
-	pblk_free_rqd(pblk, rqd, WRITE);
+	pblk_free_rqd(pblk, rqd, WRITE_INT);
 
 	atomic_dec(&pblk->inflight_io);
 	kref_put(&pad_rq->ref, pblk_recov_complete);
@@ -404,14 +403,14 @@ next_pad_rq:
 	ppa_list = (void *)(meta_list) + pblk_dma_meta_size;
 	dma_ppa_list = dma_meta_list + pblk_dma_meta_size;
 
-	rqd = pblk_alloc_rqd(pblk, WRITE);
+	rqd = pblk_alloc_rqd(pblk, WRITE_INT);
 	if (IS_ERR(rqd)) {
 		ret = PTR_ERR(rqd);
 		goto fail_free_meta;
 	}
 
 	bio = pblk_bio_map_addr(pblk, data, rq_ppas, rq_len,
-						PBLK_VMALLOC_META, GFP_KERNEL);
+					PBLK_VMALLOC_META, GFP_KERNEL, 0);
 	if (IS_ERR(bio)) {
 		ret = PTR_ERR(bio);
 		goto fail_free_rqd;
@@ -492,7 +491,7 @@ free_rq:
 fail_free_bio:
 	bio_put(bio);
 fail_free_rqd:
-	pblk_free_rqd(pblk, rqd, WRITE);
+	pblk_free_rqd(pblk, rqd, WRITE_INT);
 fail_free_meta:
 	nvm_dev_dma_free(dev->parent, meta_list, dma_meta_list);
 fail_free_pad:

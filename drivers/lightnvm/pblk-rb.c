@@ -326,8 +326,8 @@ void pblk_rb_write_entry_user(struct pblk_rb *rb, void *data,
 }
 
 void pblk_rb_write_entry_gc(struct pblk_rb *rb, void *data,
-			    struct pblk_w_ctx w_ctx, struct pblk_line *gc_line,
-			    unsigned int ring_pos)
+			    struct pblk_w_ctx w_ctx, struct pblk_line *line,
+			    u64 paddr, unsigned int ring_pos)
 {
 	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 	struct pblk_rb_entry *entry;
@@ -342,7 +342,7 @@ void pblk_rb_write_entry_gc(struct pblk_rb *rb, void *data,
 
 	__pblk_rb_write_entry(rb, data, w_ctx, entry);
 
-	if (!pblk_update_map_gc(pblk, w_ctx.lba, entry->cacheline, gc_line))
+	if (!pblk_update_map_gc(pblk, w_ctx.lba, entry->cacheline, line, paddr))
 		entry->w_ctx.lba = ADDR_EMPTY;
 
 	flags = w_ctx.flags | PBLK_WRITTEN_DATA;
@@ -659,7 +659,7 @@ try:
  * be directed to disk.
  */
 int pblk_rb_copy_to_bio(struct pblk_rb *rb, struct bio *bio, sector_t lba,
-			struct ppa_addr ppa, int bio_iter)
+			struct ppa_addr ppa, int bio_iter, bool advanced_bio)
 {
 	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 	struct pblk_rb_entry *entry;
@@ -696,7 +696,7 @@ int pblk_rb_copy_to_bio(struct pblk_rb *rb, struct bio *bio, sector_t lba,
 	 * filled with data from the cache). If part of the data resides on the
 	 * media, we will read later on
 	 */
-	if (unlikely(!bio->bi_iter.bi_idx))
+	if (unlikely(!advanced_bio))
 		bio_advance(bio, bio_iter * PBLK_EXPOSED_PAGE_SIZE);
 
 	data = bio_data(bio);

@@ -65,7 +65,7 @@ enum {
 	NULL_Q_MQ		= 2,
 };
 
-static int submit_queues;
+static int submit_queues = 1;
 module_param(submit_queues, int, S_IRUGO);
 MODULE_PARM_DESC(submit_queues, "Number of submission queues");
 
@@ -733,9 +733,6 @@ static int null_add_dev(void)
 
 	spin_lock_init(&nullb->lock);
 
-	if (queue_mode == NULL_Q_MQ && use_per_node_hctx)
-		submit_queues = nr_online_nodes;
-
 	rv = setup_queues(nullb);
 	if (rv)
 		goto out_free_nullb;
@@ -844,25 +841,30 @@ static int __init null_init(void)
 		queue_mode = NULL_Q_MQ;
 	}
 
-	if (queue_mode == NULL_Q_MQ && shared_tags)
-		null_init_tag_set(&tag_set);
-
 	if (queue_mode == NULL_Q_MQ && use_per_node_hctx) {
-		if (submit_queues < nr_online_nodes) {
-			pr_warn("null_blk: submit_queues param is set to %u.",
+		if (submit_queues != nr_online_nodes) {
+			pr_warn("null_blk: submit_queues param is set to %u.\n",
 							nr_online_nodes);
 			submit_queues = nr_online_nodes;
 		}
 	} else if (submit_queues > nr_cpu_ids)
 		submit_queues = nr_cpu_ids;
-	else if (!submit_queues)
+	else if (submit_queues <= 0)
 		submit_queues = 1;
+
+	if (queue_mode == NULL_Q_MQ && shared_tags) {
+		ret = null_init_tag_set(&tag_set);
+		if (ret)
+			return ret;
+	}
 
 	mutex_init(&lock);
 
 	null_major = register_blkdev(0, "nullb");
-	if (null_major < 0)
-		return null_major;
+	if (null_major < 0) {
+		ret = null_major;
+		goto err_tagset;
+	}
 
 	if (use_lightnvm) {
 		ppa_cache = kmem_cache_create("ppa_cache", 64 * sizeof(u64),
@@ -891,6 +893,9 @@ err_dev:
 	kmem_cache_destroy(ppa_cache);
 err_ppa:
 	unregister_blkdev(null_major, "nullb");
+err_tagset:
+	if (queue_mode == NULL_Q_MQ && shared_tags)
+		blk_mq_free_tag_set(&tag_set);
 	return ret;
 }
 

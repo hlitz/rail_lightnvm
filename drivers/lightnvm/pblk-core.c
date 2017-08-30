@@ -78,11 +78,7 @@ void __pblk_map_invalidate(struct pblk *pblk, struct pblk_line *line,
 	 * that newer updates are not overwritten.
 	 */
 	spin_lock(&line->lock);
-	if (line->state == PBLK_LINESTATE_GC ||
-					line->state == PBLK_LINESTATE_FREE) {
-		spin_unlock(&line->lock);
-		return;
-	}
+	WARN_ON(line->state == PBLK_LINESTATE_FREE);
 
 	if (test_and_set_bit(paddr, line->invalid_bitmap)) {
 		WARN_ONCE(1, "pblk: double invalidate\n");
@@ -99,8 +95,7 @@ void __pblk_map_invalidate(struct pblk *pblk, struct pblk_line *line,
 		spin_lock(&l_mg->gc_lock);
 		spin_lock(&line->lock);
 		/* Prevent moving a line that has just been chosen for GC */
-		if (line->state == PBLK_LINESTATE_GC ||
-					line->state == PBLK_LINESTATE_FREE) {
+		if (line->state == PBLK_LINESTATE_GC) {
 			spin_unlock(&line->lock);
 			spin_unlock(&l_mg->gc_lock);
 			return;
@@ -191,7 +186,6 @@ void pblk_bio_free_pages(struct pblk *pblk, struct bio *bio, int off,
 
 	WARN_ON(off + nr_pages != bio->bi_vcnt);
 
-	bio_advance(bio, off * PBLK_EXPOSED_PAGE_SIZE);
 	for (i = off; i < nr_pages + off; i++) {
 		bv = bio->bi_io_vec[i];
 		mempool_free(bv.bv_page, pblk->page_pool);
@@ -427,42 +421,14 @@ int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd)
 
 struct bio *pblk_bio_map_addr(struct pblk *pblk, void *data,
 			      unsigned int nr_secs, unsigned int len,
-			      int alloc_type, gfp_t gfp_mask)
+			      int alloc_type, gfp_t gfp_mask, int reading)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
-	void *kaddr = data;
-	struct page *page;
-	struct bio *bio;
-	int i, ret;
 
 	if (alloc_type == PBLK_KMALLOC_META)
-		return bio_map_kern(dev->q, kaddr, len, gfp_mask);
+		return bio_map_kern(dev->q, data, len, gfp_mask);
 
-	bio = bio_kmalloc(gfp_mask, nr_secs);
-	if (!bio)
-		return ERR_PTR(-ENOMEM);
-
-	for (i = 0; i < nr_secs; i++) {
-		page = vmalloc_to_page(kaddr);
-		if (!page) {
-			pr_err("pblk: could not map vmalloc bio\n");
-			bio_put(bio);
-			bio = ERR_PTR(-ENOMEM);
-			goto out;
-		}
-
-		ret = bio_add_pc_page(dev->q, bio, page, PAGE_SIZE, 0);
-		if (ret != PAGE_SIZE) {
-			pr_err("pblk: could not add page to bio\n");
-			bio_put(bio);
-			bio = ERR_PTR(-ENOMEM);
-			goto out;
-		}
-
-		kaddr += PAGE_SIZE;
-	}
-out:
-	return bio;
+	return bio_copy_kern(dev->q, data, len, GFP_KERNEL, reading);
 }
 
 int pblk_calc_secs(struct pblk *pblk, unsigned long secs_avail,
@@ -632,7 +598,7 @@ next_rq:
 	rq_len = rq_ppas * geo->sec_size;
 
 	bio = pblk_bio_map_addr(pblk, emeta_buf, rq_ppas, rq_len,
-					l_mg->emeta_alloc_type, GFP_KERNEL);
+			l_mg->emeta_alloc_type, GFP_KERNEL, dir == READ);
 	if (IS_ERR(bio)) {
 		ret = PTR_ERR(bio);
 		goto free_rqd_dma;
@@ -723,9 +689,6 @@ next_rq:
 
 	atomic_dec(&pblk->inflight_io);
 	reinit_completion(&wait);
-
-	if (likely(pblk->l_mg.emeta_alloc_type == PBLK_VMALLOC_META))
-		bio_put(bio);
 
 	if (rqd.error) {
 		if (dir == WRITE)
@@ -1785,7 +1748,7 @@ void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	int pos = pblk_ppa_to_pos(geo, ppa_list[0]);
-		
+
 	__pblk_down_page(pblk, ppa_list, nr_ppas, pos);
 }
 
@@ -1843,7 +1806,7 @@ void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 
 void pblk_update_map(struct pblk *pblk, sector_t lba, struct ppa_addr ppa)
 {
-	struct ppa_addr l2p_ppa;
+	struct ppa_addr ppa_l2p;
 
 	/* logic error: lba out-of-bounds. Ignore update */
 	if (!(lba < pblk->rl.nr_secs)) {
@@ -1852,10 +1815,10 @@ void pblk_update_map(struct pblk *pblk, sector_t lba, struct ppa_addr ppa)
 	}
 
 	spin_lock(&pblk->trans_lock);
-	l2p_ppa = pblk_trans_map_get(pblk, lba);
+	ppa_l2p = pblk_trans_map_get(pblk, lba);
 
-	if (!pblk_addr_in_cache(l2p_ppa) && !pblk_ppa_empty(l2p_ppa))
-		pblk_map_invalidate(pblk, l2p_ppa);
+	if (!pblk_addr_in_cache(ppa_l2p) && !pblk_ppa_empty(ppa_l2p))
+		pblk_map_invalidate(pblk, ppa_l2p);
 
 	pblk_trans_map_set(pblk, lba, ppa);
 	spin_unlock(&pblk->trans_lock);
@@ -1863,6 +1826,7 @@ void pblk_update_map(struct pblk *pblk, sector_t lba, struct ppa_addr ppa)
 
 void pblk_update_map_cache(struct pblk *pblk, sector_t lba, struct ppa_addr ppa)
 {
+
 #ifdef CONFIG_NVM_DEBUG
 	/* Callers must ensure that the ppa points to a cache address */
 	BUG_ON(!pblk_addr_in_cache(ppa));
@@ -1872,16 +1836,16 @@ void pblk_update_map_cache(struct pblk *pblk, sector_t lba, struct ppa_addr ppa)
 	pblk_update_map(pblk, lba, ppa);
 }
 
-int pblk_update_map_gc(struct pblk *pblk, sector_t lba, struct ppa_addr ppa,
-		       struct pblk_line *gc_line)
+int pblk_update_map_gc(struct pblk *pblk, sector_t lba, struct ppa_addr ppa_new,
+		       struct pblk_line *gc_line, u64 paddr_gc)
 {
-	struct ppa_addr l2p_ppa;
+	struct ppa_addr ppa_l2p, ppa_gc;
 	int ret = 1;
 
 #ifdef CONFIG_NVM_DEBUG
 	/* Callers must ensure that the ppa points to a cache address */
-	BUG_ON(!pblk_addr_in_cache(ppa));
-	BUG_ON(pblk_rb_pos_oob(&pblk->rwb, pblk_addr_to_cacheline(ppa)));
+	BUG_ON(!pblk_addr_in_cache(ppa_new));
+	BUG_ON(pblk_rb_pos_oob(&pblk->rwb, pblk_addr_to_cacheline(ppa_new)));
 #endif
 
 	/* logic error: lba out-of-bounds. Ignore update */
@@ -1891,36 +1855,41 @@ int pblk_update_map_gc(struct pblk *pblk, sector_t lba, struct ppa_addr ppa,
 	}
 
 	spin_lock(&pblk->trans_lock);
-	l2p_ppa = pblk_trans_map_get(pblk, lba);
+	ppa_l2p = pblk_trans_map_get(pblk, lba);
+	ppa_gc = addr_to_gen_ppa(pblk, paddr_gc, gc_line->id);
 
-	/* Prevent updated entries to be overwritten by GC */
-	if (pblk_addr_in_cache(l2p_ppa) || pblk_ppa_empty(l2p_ppa) ||
-				pblk_tgt_ppa_to_line(l2p_ppa) != gc_line->id) {
+	if (!pblk_ppa_comp(ppa_l2p, ppa_gc)) {
+		spin_lock(&gc_line->lock);
+		WARN(!test_bit(paddr_gc, gc_line->invalid_bitmap),
+						"pblk: corrupted GC update");
+		spin_unlock(&gc_line->lock);
+
 		ret = 0;
 		goto out;
 	}
 
-	pblk_trans_map_set(pblk, lba, ppa);
+	pblk_trans_map_set(pblk, lba, ppa_new);
 out:
 	spin_unlock(&pblk->trans_lock);
 	return ret;
 }
 
-void pblk_update_map_dev(struct pblk *pblk, sector_t lba, struct ppa_addr ppa,
-			 struct ppa_addr entry_line)
+void pblk_update_map_dev(struct pblk *pblk, sector_t lba,
+			 struct ppa_addr ppa_mapped, struct ppa_addr ppa_cache)
 {
-	struct ppa_addr l2p_line;
+	struct ppa_addr ppa_l2p;
 
 #ifdef CONFIG_NVM_DEBUG
 	/* Callers must ensure that the ppa points to a device address */
-	BUG_ON(pblk_addr_in_cache(ppa));
+	BUG_ON(pblk_addr_in_cache(ppa_mapped));
 #endif
 	/* Invalidate and discard padded entries */
 	if (lba == ADDR_EMPTY) {
 #ifdef CONFIG_NVM_DEBUG
 		atomic_long_inc(&pblk->padded_wb);
 #endif
-		pblk_map_invalidate(pblk, ppa);
+		if (!pblk_ppa_empty(ppa_mapped))
+			pblk_map_invalidate(pblk, ppa_mapped);
 		return;
 	}
 
@@ -1931,22 +1900,22 @@ void pblk_update_map_dev(struct pblk *pblk, sector_t lba, struct ppa_addr ppa,
 	}
 
 	spin_lock(&pblk->trans_lock);
-	l2p_line = pblk_trans_map_get(pblk, lba);
+	ppa_l2p = pblk_trans_map_get(pblk, lba);
 
 	/* Do not update L2P if the cacheline has been updated. In this case,
 	 * the mapped ppa must be invalidated
 	 */
-	if (l2p_line.ppa != entry_line.ppa) {
-		if (!pblk_ppa_empty(ppa))
-			pblk_map_invalidate(pblk, ppa);
+	if (!pblk_ppa_comp(ppa_l2p, ppa_cache)) {
+		if (!pblk_ppa_empty(ppa_mapped))
+			pblk_map_invalidate(pblk, ppa_mapped);
 		goto out;
 	}
 
 #ifdef CONFIG_NVM_DEBUG
-	WARN_ON(!pblk_addr_in_cache(l2p_line) && !pblk_ppa_empty(l2p_line));
+	WARN_ON(!pblk_addr_in_cache(ppa_l2p) && !pblk_ppa_empty(ppa_l2p));
 #endif
 
-	pblk_trans_map_set(pblk, lba, ppa);
+	pblk_trans_map_set(pblk, lba, ppa_mapped);
 out:
 	spin_unlock(&pblk->trans_lock);
 }
@@ -1965,15 +1934,13 @@ void pblk_lookup_l2p_seq(struct pblk *pblk, struct ppa_addr *ppas,
 void pblk_lookup_l2p_rand(struct pblk *pblk, struct ppa_addr *ppas,
 			  u64 *lba_list, int nr_secs)
 {
-	sector_t lba;
+	u64 lba;
 	int i;
 
 	spin_lock(&pblk->trans_lock);
 	for (i = 0; i < nr_secs; i++) {
 		lba = lba_list[i];
-		if (lba == ADDR_EMPTY) {
-			ppas[i].ppa = ADDR_EMPTY;
-		} else {
+		if (lba != ADDR_EMPTY) {
 			/* logic error: lba out-of-bounds. Ignore update */
 			if (!(lba < pblk->rl.nr_secs)) {
 				WARN(1, "pblk: corrupted L2P map request\n");

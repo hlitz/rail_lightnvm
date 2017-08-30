@@ -25,14 +25,20 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	unsigned long ret;
 	int i;
 
-	for (i = 0; i < c_ctx->nr_valid; i++) {
+	i = 0;
+	do {
 		struct pblk_w_ctx *w_ctx;
 
 		w_ctx = pblk_rb_w_ctx(&pblk->rwb, c_ctx->sentry + i);
-		while ((original_bio = bio_list_pop(&w_ctx->bios))){
+		while ((original_bio = bio_list_pop(&w_ctx->bios)))
 			bio_endio(original_bio);
-		}
-	}
+
+		i++;
+	} while (i < c_ctx->nr_valid);
+
+	if (c_ctx->nr_padded)
+		pblk_bio_free_pages(pblk, rqd->bio, c_ctx->nr_valid,
+							c_ctx->nr_padded);
 
 #ifdef CONFIG_NVM_DEBUG
 	atomic_long_add(c_ctx->nr_valid, &pblk->sync_writes);
@@ -186,26 +192,21 @@ static void pblk_end_io_write_meta(struct nvm_rq *rqd)
 	struct pblk_line *line = m_ctx->private;
 	struct pblk_emeta *emeta = line->emeta;
 	int sync;
-	
+
 	pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas);
-	
+
 	if (rqd->error) {
 		pblk_log_write_err(pblk, rqd);
 		pr_err("pblk: metadata I/O failed. Line %d\n", line->id);
 	}
-#ifdef CONFIG_NVM_DEBUG
-	else
-		WARN_ONCE(rqd->bio->bi_status, "pblk: corrupted write error\n");
-#endif
 
 	sync = atomic_add_return(rqd->nr_ppas, &emeta->sync);
 	if (sync == emeta->nr_entries)
 		pblk_line_run_ws(pblk, line, NULL, pblk_line_close_ws,
 								pblk->close_wq);
 
-	bio_put(rqd->bio);
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
-	pblk_free_rqd(pblk, rqd, READ);
+	pblk_free_rqd(pblk, rqd, WRITE_INT);
 
 	atomic_dec(&pblk->inflight_io);
 }
@@ -379,7 +380,7 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 	int i, j;
 	int ret;
 
-	rqd = pblk_alloc_rqd(pblk, READ);
+	rqd = pblk_alloc_rqd(pblk, WRITE_INT);
 	if (IS_ERR(rqd)) {
 		pr_err("pblk: cannot allocate write req.\n");
 		return PTR_ERR(rqd);
@@ -391,7 +392,7 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 	data = ((void *)emeta->buf) + emeta->mem;
 
 	bio = pblk_bio_map_addr(pblk, data, rq_ppas, rq_len,
-					l_mg->emeta_alloc_type, GFP_KERNEL);
+				l_mg->emeta_alloc_type, GFP_KERNEL, 0);
 	if (IS_ERR(bio)) {
 		ret = PTR_ERR(bio);
 		goto fail_free_rqd;
@@ -444,7 +445,7 @@ fail_free_bio:
 	if (likely(l_mg->emeta_alloc_type == PBLK_VMALLOC_META))
 		bio_put(bio);
 fail_free_rqd:
-	pblk_free_rqd(pblk, rqd, READ);
+	pblk_free_rqd(pblk, rqd, WRITE_INT);
 	return ret;
 }
 
@@ -532,7 +533,7 @@ static void pblk_free_write_rqd(struct pblk *pblk, struct nvm_rq *rqd)
 	struct bio *bio = rqd->bio;
 
 	if (c_ctx->nr_padded)
-		pblk_bio_free_pages(pblk, bio, rqd->nr_ppas, c_ctx->nr_padded);
+		pblk_bio_free_pages(pblk, bio, c_ctx->nr_valid, c_ctx->nr_padded);
 }
 
 static int pblk_submit_write(struct pblk *pblk)

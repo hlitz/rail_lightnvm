@@ -264,7 +264,10 @@ __blkdev_direct_IO_simple(struct kiocb *iocb, struct iov_iter *iter,
 		kfree(vecs);
 
 	if (unlikely(bio.bi_status))
-		return blk_status_to_errno(bio.bi_status);
+		ret = blk_status_to_errno(bio.bi_status);
+
+	bio_uninit(&bio);
+
 	return ret;
 }
 
@@ -629,7 +632,7 @@ int blkdev_fsync(struct file *filp, loff_t start, loff_t end, int datasync)
 	struct block_device *bdev = I_BDEV(bd_inode);
 	int error;
 	
-	error = filemap_write_and_wait_range(filp->f_mapping, start, end);
+	error = file_write_and_wait_range(filp, start, end);
 	if (error)
 		return error;
 
@@ -1748,6 +1751,7 @@ static int blkdev_open(struct inode * inode, struct file * filp)
 		return -ENOMEM;
 
 	filp->f_mapping = bdev->bd_inode->i_mapping;
+	filp->f_wb_err = filemap_sample_wb_err(filp->f_mapping);
 
 	return blkdev_get(bdev, filp->f_mode, filp);
 }

@@ -59,7 +59,10 @@
 		for ((i) = 0, rlun = &(pblk)->luns[0]; \
 			(i) < (pblk)->nr_luns; (i)++, rlun = &(pblk)->luns[(i)])
 
-#define ERASE 2 /* READ = 0, WRITE = 1 */
+/* READ = 0, WRITE (user) = 1 */
+#define ERASE 2
+#define WRITE_INT 3 /* Internal write. Not through write buffer */
+
 
 enum {
 	/* IO Types */
@@ -95,6 +98,7 @@ enum {
 };
 
 #define pblk_dma_meta_size (sizeof(struct pblk_sec_meta) * PBLK_MAX_REQ_ADDRS)
+#define pblk_dma_ppa_size (sizeof(u64) * PBLK_MAX_REQ_ADDRS)
 
 /* write buffer completion context */
 struct pblk_c_ctx {
@@ -110,6 +114,7 @@ struct pblk_c_ctx {
 /* generic context */
 struct pblk_g_ctx {
 	void *private;
+	u64 lba;
 };
 
 /* Pad context */
@@ -208,6 +213,7 @@ struct pblk_lun {
 struct pblk_gc_rq {
 	struct pblk_line *line;
 	void *data;
+	u64 paddr_list[PBLK_MAX_REQ_ADDRS];
 	u64 lba_list[PBLK_MAX_REQ_ADDRS];
 	int nr_secs;
 	int secs_to_gc;
@@ -680,8 +686,8 @@ int pblk_rb_may_write_gc(struct pblk_rb *rb, unsigned int nr_entries,
 void pblk_rb_write_entry_user(struct pblk_rb *rb, void *data,
 			      struct pblk_w_ctx w_ctx, unsigned int pos);
 void pblk_rb_write_entry_gc(struct pblk_rb *rb, void *data,
-			    struct pblk_w_ctx w_ctx, struct pblk_line *gc_line,
-			    unsigned int pos);
+			    struct pblk_w_ctx w_ctx, struct pblk_line *line,
+			    u64 paddr, unsigned int pos);
 struct pblk_w_ctx *pblk_rb_w_ctx(struct pblk_rb *rb, unsigned int pos);
 void pblk_rb_flush(struct pblk_rb *rb);
 
@@ -693,7 +699,7 @@ unsigned int pblk_rb_read_to_bio_list(struct pblk_rb *rb, struct bio *bio,
 				      struct list_head *list,
 				      unsigned int max);
 int pblk_rb_copy_to_bio(struct pblk_rb *rb, struct bio *bio, sector_t lba,
-			struct ppa_addr ppa, int bio_iter);
+			struct ppa_addr ppa, int bio_iter, bool advanced_bio);
 unsigned int pblk_rb_read_commit(struct pblk_rb *rb, unsigned int entries);
 
 unsigned int pblk_rb_sync_init(struct pblk_rb *rb, unsigned long *flags);
@@ -729,7 +735,7 @@ int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd);
 int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line);
 struct bio *pblk_bio_map_addr(struct pblk *pblk, void *data,
 			      unsigned int nr_secs, unsigned int len,
-			      int alloc_type, gfp_t gfp_mask);
+			      int alloc_type, gfp_t gfp_mask, int reading);
 struct pblk_line *pblk_line_get(struct pblk *pblk);
 struct pblk_line *pblk_line_get_first_data(struct pblk *pblk);
 void pblk_line_replace_data(struct pblk *pblk);
@@ -787,7 +793,7 @@ void pblk_update_map_cache(struct pblk *pblk, sector_t lba,
 void pblk_update_map_dev(struct pblk *pblk, sector_t lba,
 			 struct ppa_addr ppa, struct ppa_addr entry_line);
 int pblk_update_map_gc(struct pblk *pblk, sector_t lba, struct ppa_addr ppa,
-		       struct pblk_line *gc_line);
+		       struct pblk_line *gc_line, u64 paddr);
 void pblk_lookup_l2p_rand(struct pblk *pblk, struct ppa_addr *ppas,
 			  u64 *lba_list, int nr_secs);
 void pblk_lookup_l2p_seq(struct pblk *pblk, struct ppa_addr *ppas,
@@ -798,9 +804,7 @@ void pblk_lookup_l2p_seq(struct pblk *pblk, struct ppa_addr *ppas,
  */
 int pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
 			unsigned long flags);
-int pblk_write_gc_to_cache(struct pblk *pblk, void *data, u64 *lba_list,
-			   unsigned int nr_entries, unsigned int nr_rec_entries,
-			   struct pblk_line *gc_line, unsigned long flags);
+int pblk_write_gc_to_cache(struct pblk *pblk, struct pblk_gc_rq *gc_rq);
 int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd, bool rail_parity);
 
 /*
@@ -829,9 +833,7 @@ int pblk_alloc_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
  */
 extern struct bio_set *pblk_bio_set;
 int pblk_submit_read(struct pblk *pblk, struct bio *bio);
-int pblk_submit_read_gc(struct pblk *pblk, u64 *lba_list, void *data,
-			unsigned int nr_secs, unsigned int *secs_to_gc,
-			struct pblk_line *line);
+int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq);
 /*
  * pblk recovery
  */
@@ -847,7 +849,7 @@ int pblk_recov_setup_rq(struct pblk *pblk, struct pblk_c_ctx *c_ctx,
  * pblk gc
  */
 #define PBLK_GC_MAX_READERS 8	/* Max number of outstanding GC reader jobs */
-#define PBLK_GC_W_QD 128	/* Queue depth for inflight GC write I/Os */
+#define PBLK_GC_RQ_QD 128	/* Queue depth for inflight GC requests */
 #define PBLK_GC_L_QD 4		/* Queue depth for inflight GC lines */
 #define PBLK_GC_RSV_LINE 1	/* Reserved lines for GC */
 
@@ -954,13 +956,7 @@ static inline void *emeta_to_vsc(struct pblk *pblk, struct line_emeta *emeta)
 
 static inline int pblk_line_vsc(struct pblk_line *line)
 {
-	int vsc;
-
-	spin_lock(&line->lock);
-	vsc = le32_to_cpu(*line->vsc);
-	spin_unlock(&line->lock);
-
-	return vsc;
+	return le32_to_cpu(*line->vsc);
 }
 
 #define NVM_MEM_PAGE_WRITE (8)

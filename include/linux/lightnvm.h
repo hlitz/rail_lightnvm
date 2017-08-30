@@ -102,7 +102,8 @@ enum {
 	/* Status codes */
 	NVM_RSP_SUCCESS		= 0x0,
 	NVM_RSP_NOT_CHANGEABLE	= 0x1,
-	NVM_RSP_ERR_FAILWRITE	= 0x40ff,
+	NVM_RSP_ERR_FAILWRITE	= 0x40ff,	/* Generic write failure */
+	NVM_RSP_ERR_FAILWP	= 0x42f0,	/* Write pointer failure */
 	NVM_RSP_ERR_EMPTYPAGE	= 0x42ff,
 	NVM_RSP_ERR_FAILECC	= 0x4281,
 	NVM_RSP_ERR_FAILCRC	= 0x4004,

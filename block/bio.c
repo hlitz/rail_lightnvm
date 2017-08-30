@@ -240,20 +240,18 @@ fallback:
 	return bvl;
 }
 
-static void __bio_free(struct bio *bio)
+void bio_uninit(struct bio *bio)
 {
 	bio_disassociate_task(bio);
-
-	if (bio_integrity(bio))
-		bio_integrity_free(bio);
 }
+EXPORT_SYMBOL(bio_uninit);
 
 static void bio_free(struct bio *bio)
 {
 	struct bio_set *bs = bio->bi_pool;
 	void *p;
 
-	__bio_free(bio);
+	bio_uninit(bio);
 
 	if (bs) {
 		bvec_free(bs->bvec_pool, bio->bi_io_vec, BVEC_POOL_IDX(bio));
@@ -271,6 +269,11 @@ static void bio_free(struct bio *bio)
 	}
 }
 
+/*
+ * Users of this function have their own bio allocation. Subsequently,
+ * they must remember to pair any call to bio_init() with bio_uninit()
+ * when IO has completed, or when the bio is released.
+ */
 void bio_init(struct bio *bio, struct bio_vec *table,
 	      unsigned short max_vecs)
 {
@@ -297,7 +300,7 @@ void bio_reset(struct bio *bio)
 {
 	unsigned long flags = bio->bi_flags & (~0UL << BIO_RESET_BITS);
 
-	__bio_free(bio);
+	bio_uninit(bio);
 
 	memset(bio, 0, BIO_RESET_BYTES);
 	bio->bi_flags = flags;
@@ -933,6 +936,10 @@ static void submit_bio_wait_endio(struct bio *bio)
  *
  * Simple wrapper around submit_bio(). Returns 0 on success, or the error from
  * bio_endio() on failure.
+ *
+ * WARNING: Unlike to how submit_bio() is usually used, this function does not
+ * result in bio reference to be consumed. The caller must drop the reference
+ * on his own.
  */
 int submit_bio_wait(struct bio *bio)
 {
@@ -1729,29 +1736,29 @@ void bio_check_pages_dirty(struct bio *bio)
 	}
 }
 
-void generic_start_io_acct(int rw, unsigned long sectors,
-			   struct hd_struct *part)
+void generic_start_io_acct(struct request_queue *q, int rw,
+			   unsigned long sectors, struct hd_struct *part)
 {
 	int cpu = part_stat_lock();
 
-	part_round_stats(cpu, part);
+	part_round_stats(q, cpu, part);
 	part_stat_inc(cpu, part, ios[rw]);
 	part_stat_add(cpu, part, sectors[rw], sectors);
-	part_inc_in_flight(part, rw);
+	part_inc_in_flight(q, part, rw);
 
 	part_stat_unlock();
 }
 EXPORT_SYMBOL(generic_start_io_acct);
 
-void generic_end_io_acct(int rw, struct hd_struct *part,
-			 unsigned long start_time)
+void generic_end_io_acct(struct request_queue *q, int rw,
+			 struct hd_struct *part, unsigned long start_time)
 {
 	unsigned long duration = jiffies - start_time;
 	int cpu = part_stat_lock();
 
 	part_stat_add(cpu, part, ticks[rw], duration);
-	part_round_stats(cpu, part);
-	part_dec_in_flight(part, rw);
+	part_round_stats(q, cpu, part);
+	part_dec_in_flight(q, part, rw);
 
 	part_stat_unlock();
 }
@@ -1807,6 +1814,8 @@ void bio_endio(struct bio *bio)
 again:
 	if (!bio_remaining_done(bio))
 		return;
+	if (!bio_integrity_endio(bio))
+		return;
 
 	/*
 	 * Need to have a real endio function for chained bios, otherwise
@@ -1828,6 +1837,8 @@ again:
 	}
 
 	blk_throtl_bio_endio(bio);
+	/* release cgroup info */
+	bio_uninit(bio);
 	if (bio->bi_end_io)
 		bio->bi_end_io(bio);
 }
@@ -1862,7 +1873,7 @@ struct bio *bio_split(struct bio *bio, int sectors,
 	split->bi_iter.bi_size = sectors << 9;
 
 	if (bio_integrity(split))
-		bio_integrity_trim(split, 0, sectors);
+		bio_integrity_trim(split);
 
 	bio_advance(bio, split->bi_iter.bi_size);
 
@@ -1894,6 +1905,10 @@ void bio_trim(struct bio *bio, int offset, int size)
 	bio_advance(bio, offset << 9);
 
 	bio->bi_iter.bi_size = size;
+
+	if (bio_integrity(bio))
+		bio_integrity_trim(bio);
+
 }
 EXPORT_SYMBOL_GPL(bio_trim);
 
