@@ -95,15 +95,6 @@ retry:
 			WARN_ON(test_and_set_bit(i, rail_bitmap));
 			advanced_bio = 1;
 		} else {
-			int line_id = pblk_dev_ppa_to_line(p);
-			struct pblk_line *line = &pblk->lines[line_id];
-
-			/* Read from media non-cached sectors */
-			if (!kref_get_unless_zero(&line->ref)) {
-				pblk_lookup_l2p_seq(pblk, &p, lba, 1);
-				goto retry;
-			}
-
 			rqd->ppa_list[j++] = p;
 		}
 
@@ -133,24 +124,6 @@ int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd)
 	return NVM_IO_OK;
 }
 
-static void pblk_read_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd)
-{
-	struct ppa_addr *ppa_list;
-	int i;
-
-	ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
-
-	for (i = 0; i < rqd->nr_ppas; i++) {
-		struct ppa_addr ppa = ppa_list[i];
-
-		if (!pblk_ppa_empty(ppa) && !pblk_addr_in_cache(ppa)) {
-			int line_id = pblk_dev_ppa_to_line(ppa);
-			struct pblk_line *line = &pblk->lines[line_id];
-
-			kref_put(&line->ref, pblk_line_put);
-		}
-	}
-}
 
 static void pblk_read_check(struct pblk *pblk, struct nvm_rq *rqd,
 			   sector_t blba)
@@ -182,7 +155,7 @@ static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 		WARN_ONCE(bio->bi_status, "pblk: corrupted read error\n");
 #endif
 
-	pblk_read_check(pblk, rqd, r_ctx->lba);
+	//pblk_read_check(pblk, rqd, r_ctx->lba);
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
 
 	bio_put(bio);
@@ -209,7 +182,6 @@ static void pblk_end_io_read(struct nvm_rq *rqd)
 {
 	struct pblk *pblk = rqd->private;
 
-	pblk_read_put_rqd_kref(pblk, rqd);
 	__pblk_end_io_read(pblk, rqd);
 }
 
@@ -299,11 +271,6 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	i = 0;
 	hole = find_first_zero_bit(read_bitmap, nr_secs);
 	do {
-		int line_id = pblk_dev_ppa_to_line(rqd->ppa_list[i]);
-		struct pblk_line *line = &pblk->lines[line_id];
-
-		kref_put(&line->ref, pblk_line_put);
-
 		meta_list[hole].lba = lba_list_media[i];
 
 		src_bv = new_bio->bi_io_vec[i++];
@@ -378,14 +345,6 @@ retry:
 		pblk_rail_setup_ppas(pblk, ppa, &rail_ppa_list[0], &pvalid[0]);
 		WARN_ON(test_and_set_bit(0, rail_bitmap));
 	} else {
-		int line_id = pblk_dev_ppa_to_line(ppa);
-		struct pblk_line *line = &pblk->lines[line_id];
-
-		if (!kref_get_unless_zero(&line->ref)) {
-			pblk_lookup_l2p_seq(pblk, &ppa, lba, 1);
-			goto retry;
-		}
-
 		rqd->ppa_addr = ppa;
 	}
 
