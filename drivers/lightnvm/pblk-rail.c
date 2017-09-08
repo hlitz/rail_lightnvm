@@ -432,7 +432,7 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	int i, hole, n_idx = 0;
 
 	if (rqd->error) 
-		return __pblk_end_io_read(pblk, rqd);
+		return __pblk_end_io_read(pblk, rqd, true);
 
 	i = 0;
 	hole = find_first_bit(&r_ctx->bitmap, PBLK_MAX_REQ_ADDRS);
@@ -452,7 +452,7 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 						 src_p + src_bv.bv_offset);
 
 			kunmap_atomic(src_p);
-			mempool_free(src_bv.bv_page, pblk->page_pool);
+			mempool_free(src_bv.bv_page, pblk->page_bio_pool);
 		}
 
 		kunmap_atomic(dst_p);
@@ -462,7 +462,7 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 					  hole + 1);
 	} while (hole < r_ctx->nr_orig_secs);
 
-	return __pblk_end_io_read(pblk, rqd);
+	return __pblk_end_io_read(pblk, rqd, true);
 }
 
 static void pblk_rail_end_io_read(struct nvm_rq *rqd)

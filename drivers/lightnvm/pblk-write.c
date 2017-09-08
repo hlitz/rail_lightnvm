@@ -41,7 +41,7 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 							c_ctx->nr_padded);
 
 #ifdef CONFIG_NVM_DEBUG
-	atomic_long_add(c_ctx->nr_valid, &pblk->sync_writes);
+	atomic_long_add(rqd->nr_ppas, &pblk->sync_writes);
 #endif
 
 	ret = pblk_rb_sync_advance(&pblk->rwb, c_ctx->nr_valid);
@@ -49,7 +49,7 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
 
 	bio_put(rqd->bio);
-	pblk_free_rqd(pblk, rqd, WRITE);
+	pblk_free_rqd(pblk, rqd, PBLK_WRITE);
 
 	return ret;
 }
@@ -119,10 +119,7 @@ static void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
 		ppa_list = &rqd->ppa_addr;
 
 	recovery = mempool_alloc(pblk->rec_pool, GFP_ATOMIC);
-	if (!recovery) {
-		pr_err("pblk: could not allocate recovery context\n");
-		return;
-	}
+
 	INIT_LIST_HEAD(&recovery->failed);
 
 	bit = -1;
@@ -193,7 +190,8 @@ static void pblk_end_io_write_meta(struct nvm_rq *rqd)
 	struct pblk_emeta *emeta = line->emeta;
 	int sync;
 
-	pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas);
+	if (dev->geo.nr_luns > 1)
+		pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas);
 
 	if (rqd->error) {
 		pblk_log_write_err(pblk, rqd);
@@ -202,11 +200,11 @@ static void pblk_end_io_write_meta(struct nvm_rq *rqd)
 
 	sync = atomic_add_return(rqd->nr_ppas, &emeta->sync);
 	if (sync == emeta->nr_entries)
-		pblk_line_run_ws(pblk, line, NULL, pblk_line_close_ws,
-								pblk->close_wq);
+		pblk_gen_run_ws(pblk, line, NULL, pblk_line_close_ws,
+				 GFP_ATOMIC, pblk->close_wq);
 
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
-	pblk_free_rqd(pblk, rqd, WRITE_INT);
+	pblk_free_rqd(pblk, rqd, PBLK_WRITE_INT);
 
 	atomic_dec(&pblk->inflight_io);
 }
@@ -217,9 +215,10 @@ int pblk_alloc_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 
+	/* Setup write request */
 	rqd->opcode = NVM_OP_PWRITE;
 	rqd->nr_ppas = nr_secs;
-	rqd->flags = pblk_set_progr_mode(pblk, WRITE);
+	rqd->flags = pblk_set_progr_mode(pblk, PBLK_WRITE);
 	rqd->private = pblk;
 	rqd->end_io = end_io;
 
@@ -246,11 +245,11 @@ static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	unsigned long *lun_bitmap;
 	int ret = 0;
 
-	lun_bitmap = kzalloc(lm->lun_bitmap_len, GFP_ATOMIC);
+	lun_bitmap = kzalloc(lm->lun_bitmap_len, GFP_KERNEL);
 	if (!lun_bitmap)
 		return -ENOMEM;
 	c_ctx->lun_bitmap = lun_bitmap;
-	
+
 	ret = pblk_alloc_w_rq(pblk, rqd, nr_secs, pblk_end_io_write);
 	if (ret) {
 		kfree(lun_bitmap);
@@ -284,11 +283,11 @@ int pblk_setup_w_rec_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	if (ret)
 		return ret;
 
-	pblk_map_rq(pblk, rqd, c_ctx->sentry, lun_bitmap, c_ctx->nr_valid, 0, 
+	pblk_map_rq(pblk, rqd, c_ctx->sentry, lun_bitmap, c_ctx->nr_valid, 0,
 		    false);
 
 	rqd->ppa_status = (u64)0;
-	rqd->flags = pblk_set_progr_mode(pblk, WRITE);
+	rqd->flags = pblk_set_progr_mode(pblk, PBLK_WRITE);
 
 	return ret;
 }
@@ -339,7 +338,7 @@ static inline int pblk_valid_meta_ppa(struct pblk *pblk,
 	 * the distance to not be optimal, but allow metadata I/Os to succeed.
 	 */
 	ppa_opt = addr_to_gen_ppa(pblk, paddr + data_line->meta_distance, 0);
-	if (unlikely(ppa_opt.ppa == ppa.ppa) || 
+	if (unlikely(ppa_opt.ppa == ppa.ppa) ||
 	    unlikely((data_line->meta_distance % pblk->rail.stride_width) == 0)) {
 		data_line->meta_distance -=3;
 		return 0;
@@ -383,7 +382,7 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 	int i, j;
 	int ret;
 
-	rqd = pblk_alloc_rqd(pblk, WRITE_INT);
+	rqd = pblk_alloc_rqd(pblk, PBLK_WRITE_INT);
 	if (IS_ERR(rqd)) {
 		pr_err("pblk: cannot allocate write req.\n");
 		return PTR_ERR(rqd);
@@ -395,7 +394,7 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 	data = ((void *)emeta->buf) + emeta->mem;
 
 	bio = pblk_bio_map_addr(pblk, data, rq_ppas, rq_len,
-				l_mg->emeta_alloc_type, GFP_KERNEL, 0);
+				l_mg->emeta_alloc_type, GFP_KERNEL);
 	if (IS_ERR(bio)) {
 		ret = PTR_ERR(bio);
 		goto fail_free_rqd;
@@ -426,7 +425,8 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 		spin_unlock(&l_mg->close_lock);
 	}
 
-	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas);
+	if (geo->nr_luns > 1)
+		pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas);
 
 	ret = pblk_submit_io(pblk, rqd);
 	if (ret) {
@@ -445,10 +445,9 @@ fail_rollback:
 
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
 fail_free_bio:
-	if (likely(l_mg->emeta_alloc_type == PBLK_VMALLOC_META))
-		bio_put(bio);
+	bio_put(bio);
 fail_free_rqd:
-	pblk_free_rqd(pblk, rqd, WRITE_INT);
+	pblk_free_rqd(pblk, rqd, PBLK_WRITE_INT);
 	return ret;
 }
 
@@ -466,7 +465,7 @@ retry:
 		return 0;
 	}
 	meta_line = list_first_entry(&l_mg->emeta_list, struct pblk_line, list);
-	if (bitmap_full(meta_line->map_bitmap, lm->sec_per_line))
+	if (meta_line->emeta->mem >= lm->emeta_len[0])
 		goto retry;
 	spin_unlock(&l_mg->close_lock);
 
@@ -536,7 +535,8 @@ static void pblk_free_write_rqd(struct pblk *pblk, struct nvm_rq *rqd)
 	struct bio *bio = rqd->bio;
 
 	if (c_ctx->nr_padded)
-		pblk_bio_free_pages(pblk, bio, c_ctx->nr_valid, c_ctx->nr_padded);
+		pblk_bio_free_pages(pblk, bio, c_ctx->nr_valid,
+				    c_ctx->nr_padded);
 }
 
 static int pblk_submit_write(struct pblk *pblk)
@@ -557,18 +557,15 @@ static int pblk_submit_write(struct pblk *pblk)
 	secs_to_flush = pblk_rb_sync_point_count(&pblk->rwb);
 	if (!secs_to_flush && secs_avail < pblk->min_write_pgs)
 		return 1;
-       
-	rqd = pblk_alloc_rqd(pblk, WRITE);
+
+	rqd = pblk_alloc_rqd(pblk, PBLK_WRITE);
 	if (IS_ERR(rqd)) {
 		pr_err("pblk: cannot allocate write req.\n");
 		return 1;
 	}
 
 	bio = bio_alloc(GFP_KERNEL, pblk->max_write_pgs);
-	if (!bio) {
-		pr_err("pblk: cannot allocate write bio\n");
-		goto fail_free_rqd;
-	}
+
 	bio->bi_iter.bi_sector = 0; /* internal bio */
 	bio_set_op_attrs(bio, REQ_OP_WRITE, 0);
 	rqd->bio = bio;
@@ -601,8 +598,7 @@ fail_free_bio:
 	pblk_free_write_rqd(pblk, rqd);
 fail_put_bio:
 	bio_put(bio);
-fail_free_rqd:
-	pblk_free_rqd(pblk, rqd, WRITE);
+	pblk_free_rqd(pblk, rqd, PBLK_WRITE);
 
 
 	return 1;

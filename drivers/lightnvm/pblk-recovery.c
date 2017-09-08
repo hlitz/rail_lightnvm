@@ -34,10 +34,6 @@ void pblk_submit_rec(struct work_struct *work)
 								max_secs);
 
 	bio = bio_alloc(GFP_KERNEL, nr_rec_secs);
-	if (!bio) {
-		pr_err("pblk: not able to create recovery bio\n");
-		return;
-	}
 
 	bio->bi_iter.bi_sector = 0;
 	bio_set_op_attrs(bio, REQ_OP_WRITE, 0);
@@ -71,7 +67,7 @@ void pblk_submit_rec(struct work_struct *work)
 
 err:
 	bio_put(bio);
-	pblk_free_rqd(pblk, rqd, WRITE);
+	pblk_free_rqd(pblk, rqd, PBLK_WRITE);
 }
 
 int pblk_recov_setup_rq(struct pblk *pblk, struct pblk_c_ctx *c_ctx,
@@ -84,7 +80,7 @@ int pblk_recov_setup_rq(struct pblk *pblk, struct pblk_c_ctx *c_ctx,
 	struct pblk_c_ctx *rec_ctx;
 	int nr_entries = c_ctx->nr_valid + c_ctx->nr_padded;
 
-	rec_rqd = pblk_alloc_rqd(pblk, WRITE);
+	rec_rqd = pblk_alloc_rqd(pblk, PBLK_WRITE);
 	if (IS_ERR(rec_rqd)) {
 		pr_err("pblk: could not create recovery req.\n");
 		return -ENOMEM;
@@ -343,7 +339,7 @@ static void pblk_end_io_recov(struct nvm_rq *rqd)
 	pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas);
 
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
-	pblk_free_rqd(pblk, rqd, WRITE_INT);
+	pblk_free_rqd(pblk, rqd, PBLK_WRITE_INT);
 
 	atomic_dec(&pblk->inflight_io);
 	kref_put(&pad_rq->ref, pblk_recov_complete);
@@ -403,14 +399,14 @@ next_pad_rq:
 	ppa_list = (void *)(meta_list) + pblk_dma_meta_size;
 	dma_ppa_list = dma_meta_list + pblk_dma_meta_size;
 
-	rqd = pblk_alloc_rqd(pblk, WRITE_INT);
+	rqd = pblk_alloc_rqd(pblk, PBLK_WRITE_INT);
 	if (IS_ERR(rqd)) {
 		ret = PTR_ERR(rqd);
 		goto fail_free_meta;
 	}
 
 	bio = pblk_bio_map_addr(pblk, data, rq_ppas, rq_len,
-					PBLK_VMALLOC_META, GFP_KERNEL, 0);
+						PBLK_VMALLOC_META, GFP_KERNEL);
 	if (IS_ERR(bio)) {
 		ret = PTR_ERR(bio);
 		goto fail_free_rqd;
@@ -421,7 +417,7 @@ next_pad_rq:
 
 	rqd->bio = bio;
 	rqd->opcode = NVM_OP_PWRITE;
-	rqd->flags = pblk_set_progr_mode(pblk, WRITE);
+	rqd->flags = pblk_set_progr_mode(pblk, PBLK_WRITE);
 	rqd->meta_list = meta_list;
 	rqd->nr_ppas = rq_ppas;
 	rqd->ppa_list = ppa_list;
@@ -491,7 +487,7 @@ free_rq:
 fail_free_bio:
 	bio_put(bio);
 fail_free_rqd:
-	pblk_free_rqd(pblk, rqd, WRITE_INT);
+	pblk_free_rqd(pblk, rqd, PBLK_WRITE_INT);
 fail_free_meta:
 	nvm_dev_dma_free(dev->parent, meta_list, dma_meta_list);
 fail_free_pad:
@@ -787,7 +783,7 @@ static int pblk_recov_l2p_from_oob(struct pblk *pblk, struct pblk_line *line)
 	dma_addr_t dma_ppa_list, dma_meta_list;
 	int done, ret = 0;
 
-	rqd = pblk_alloc_rqd(pblk, READ);
+	rqd = pblk_alloc_rqd(pblk, PBLK_READ);
 	if (IS_ERR(rqd))
 		return PTR_ERR(rqd);
 
@@ -835,7 +831,7 @@ out:
 free_meta_list:
 	nvm_dev_dma_free(dev->parent, meta_list, dma_meta_list);
 free_rqd:
-	pblk_free_rqd(pblk, rqd, READ);
+	pblk_free_rqd(pblk, rqd, PBLK_READ);
 
 	return ret;
 }
@@ -989,7 +985,7 @@ next:
 			list_move_tail(&line->list, move_list);
 			spin_unlock(&l_mg->gc_lock);
 
-			mempool_free(line->map_bitmap, pblk->line_meta_pool);
+			kfree(line->map_bitmap);
 			line->map_bitmap = NULL;
 			line->smeta = NULL;
 			line->emeta = NULL;

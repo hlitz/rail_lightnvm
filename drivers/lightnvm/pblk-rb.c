@@ -229,7 +229,6 @@ static int __pblk_rb_update_l2p(struct pblk_rb *rb, unsigned int *l2p_upd,
 
 		line = &pblk->lines[pblk_tgt_ppa_to_line(w_ctx->ppa)];
 		kref_put(&line->ref, pblk_line_put);
-		//printk(KERN_EMERG "kref put %lu\n", READ_ONCE(line->ref.refcount));
 		clean_wctx(w_ctx);
 		*l2p_upd = (*l2p_upd + 1) & (rb->nr_entries - 1);
 	}
@@ -356,7 +355,6 @@ static int pblk_rb_sync_point_set(struct pblk_rb *rb, struct bio *bio,
 {
 	struct pblk_rb_entry *entry;
 	unsigned int subm, sync_point;
-	int flags;
 
 	subm = READ_ONCE(rb->subm);
 
@@ -370,12 +368,6 @@ static int pblk_rb_sync_point_set(struct pblk_rb *rb, struct bio *bio,
 	sync_point = (pos == 0) ? (rb->nr_entries - 1) : (pos - 1);
 	entry = &rb->entries[sync_point];
 
-	flags = READ_ONCE(entry->w_ctx.flags);
-	flags |= PBLK_FLUSH_ENTRY;
-
-	/* Release flags on context. Protect from writes */
-	smp_store_release(&entry->w_ctx.flags, flags);
-
 	/* Protect syncs */
 	smp_store_release(&rb->sync_point, sync_point);
 
@@ -384,7 +376,6 @@ static int pblk_rb_sync_point_set(struct pblk_rb *rb, struct bio *bio,
 
 	spin_lock_irq(&rb->s_lock);
 	bio_list_add(&entry->w_ctx.bios, bio);
-	printk(KERN_EMERG "set cynd poing %p\n", bio);
 	spin_unlock_irq(&rb->s_lock);
 
 	return 1;
@@ -456,6 +447,7 @@ static int pblk_rb_may_write_flush(struct pblk_rb *rb, unsigned int nr_entries,
 
 	/* Protect from read count */
 	smp_store_release(&rb->mem, mem);
+
 	return 1;
 }
 
@@ -832,16 +824,6 @@ out:
 	spin_unlock_irq(&rb->s_lock);
 
 	return ret;
-}
-
-unsigned int pblk_rb_pos_sub(struct pblk_rb *rb, unsigned int diff)
-{
-	int res = (int)READ_ONCE(rb->subm) - diff;
-	
-	if (res < 0)
-		res += rb->nr_entries;
-
-	return res;
 }
 
 unsigned int pblk_rb_wrap_pos(struct pblk_rb *rb, unsigned int pos)

@@ -20,8 +20,8 @@
 
 #include "pblk.h"
 
-static struct kmem_cache *pblk_blk_ws_cache, *pblk_rec_cache, *pblk_g_rq_cache,
-				*pblk_w_rq_cache, *pblk_line_meta_cache;
+static struct kmem_cache *pblk_ws_cache, *pblk_rec_cache, *pblk_g_rq_cache,
+				*pblk_w_rq_cache;
 static DECLARE_RWSEM(pblk_lock);
 struct bio_set *pblk_bio_set;
 
@@ -46,7 +46,7 @@ static int pblk_rw_io(struct request_queue *q, struct pblk *pblk,
 	 * user I/Os. Unless stalled, the rate limiter leaves at least 256KB
 	 * available for user I/O.
 	 */
-	if (unlikely(pblk_get_secs(bio) >= pblk_rl_sysfs_rate_show(&pblk->rl)))
+	if (pblk_get_secs(bio) > pblk_rl_max_io(&pblk->rl))
 		blk_queue_split(q, &bio);
 
 	return pblk_write_to_cache(pblk, bio, PBLK_IOTYPE_USER);
@@ -132,7 +132,6 @@ static int pblk_rwb_init(struct pblk *pblk)
 }
 
 /* Minimum pages needed within a lun */
-#define PAGE_POOL_SIZE 16
 #define ADDR_POOL_SIZE 64
 
 static int pblk_set_ppaf(struct pblk *pblk)
@@ -182,12 +181,10 @@ static int pblk_set_ppaf(struct pblk *pblk)
 
 static int pblk_init_global_caches(struct pblk *pblk)
 {
-	char cache_name[PBLK_CACHE_NAME_LEN];
-
 	down_write(&pblk_lock);
-	pblk_blk_ws_cache = kmem_cache_create("pblk_blk_ws",
+	pblk_ws_cache = kmem_cache_create("pblk_blk_ws",
 				sizeof(struct pblk_line_ws), 0, 0, NULL);
-	if (!pblk_blk_ws_cache) {
+	if (!pblk_ws_cache) {
 		up_write(&pblk_lock);
 		return -ENOMEM;
 	}
@@ -195,7 +192,7 @@ static int pblk_init_global_caches(struct pblk *pblk)
 	pblk_rec_cache = kmem_cache_create("pblk_rec",
 				sizeof(struct pblk_rec_ctx), 0, 0, NULL);
 	if (!pblk_rec_cache) {
-		kmem_cache_destroy(pblk_blk_ws_cache);
+		kmem_cache_destroy(pblk_ws_cache);
 		up_write(&pblk_lock);
 		return -ENOMEM;
 	}
@@ -203,7 +200,7 @@ static int pblk_init_global_caches(struct pblk *pblk)
 	pblk_g_rq_cache = kmem_cache_create("pblk_g_rq", pblk_g_rq_size,
 				0, 0, NULL);
 	if (!pblk_g_rq_cache) {
-		kmem_cache_destroy(pblk_blk_ws_cache);
+		kmem_cache_destroy(pblk_ws_cache);
 		kmem_cache_destroy(pblk_rec_cache);
 		up_write(&pblk_lock);
 		return -ENOMEM;
@@ -212,22 +209,9 @@ static int pblk_init_global_caches(struct pblk *pblk)
 	pblk_w_rq_cache = kmem_cache_create("pblk_w_rq", pblk_w_rq_size,
 				0, 0, NULL);
 	if (!pblk_w_rq_cache) {
-		kmem_cache_destroy(pblk_blk_ws_cache);
+		kmem_cache_destroy(pblk_ws_cache);
 		kmem_cache_destroy(pblk_rec_cache);
 		kmem_cache_destroy(pblk_g_rq_cache);
-		up_write(&pblk_lock);
-		return -ENOMEM;
-	}
-
-	snprintf(cache_name, sizeof(cache_name), "pblk_line_m_%s",
-							pblk->disk->disk_name);
-	pblk_line_meta_cache = kmem_cache_create(cache_name,
-				pblk->lm.sec_bitmap_len, 0, 0, NULL);
-	if (!pblk_line_meta_cache) {
-		kmem_cache_destroy(pblk_blk_ws_cache);
-		kmem_cache_destroy(pblk_rec_cache);
-		kmem_cache_destroy(pblk_g_rq_cache);
-		kmem_cache_destroy(pblk_w_rq_cache);
 		up_write(&pblk_lock);
 		return -ENOMEM;
 	}
@@ -247,73 +231,83 @@ static int pblk_core_init(struct pblk *pblk)
 	if (pblk_init_global_caches(pblk))
 		return -ENOMEM;
 
-	pblk->page_pool = mempool_create_page_pool(PAGE_POOL_SIZE, 0);
-	if (!pblk->page_pool)
+	/* Internal bios can be at most the sectors signaled by the device. */
+	pblk->page_bio_pool = mempool_create_page_pool(nvm_max_phys_sects(dev),
+									0);
+	if (!pblk->page_bio_pool)
 		return -ENOMEM;
 
-	pblk->line_ws_pool = mempool_create_slab_pool(PBLK_WS_POOL_SIZE,
-							pblk_blk_ws_cache);
-	if (!pblk->line_ws_pool)
-		goto free_page_pool;
+	pblk->gen_ws_pool = mempool_create_slab_pool(PBLK_GEN_WS_POOL_SIZE,
+							pblk_ws_cache);
+	if (!pblk->gen_ws_pool)
+		goto free_page_bio_pool;
 
 	pblk->rec_pool = mempool_create_slab_pool(geo->nr_luns, pblk_rec_cache);
 	if (!pblk->rec_pool)
-		goto free_blk_ws_pool;
+		goto free_gen_ws_pool;
 
-	pblk->g_rq_pool = mempool_create_slab_pool(PBLK_READ_REQ_POOL_SIZE,
+	pblk->r_rq_pool = mempool_create_slab_pool(geo->nr_luns,
 							pblk_g_rq_cache);
-	if (!pblk->g_rq_pool)
+	if (!pblk->r_rq_pool)
 		goto free_rec_pool;
 
-	pblk->w_rq_pool = mempool_create_slab_pool(geo->nr_luns * 2,
+	pblk->e_rq_pool = mempool_create_slab_pool(geo->nr_luns,
+							pblk_g_rq_cache);
+	if (!pblk->e_rq_pool)
+		goto free_r_rq_pool;
+
+	pblk->w_rq_pool = mempool_create_slab_pool(geo->nr_luns,
 							pblk_w_rq_cache);
 	if (!pblk->w_rq_pool)
-		goto free_g_rq_pool;
-
-	pblk->line_meta_pool =
-			mempool_create_slab_pool(PBLK_META_POOL_SIZE,
-							pblk_line_meta_cache);
-	if (!pblk->line_meta_pool)
-		goto free_w_rq_pool;
+		goto free_e_rq_pool;
 
 	pblk->close_wq = alloc_workqueue("pblk-close-wq",
 			WQ_MEM_RECLAIM | WQ_UNBOUND, PBLK_NR_CLOSE_JOBS);
 	if (!pblk->close_wq)
-		goto free_line_meta_pool;
+		goto free_w_rq_pool;
 
 	pblk->bb_wq = alloc_workqueue("pblk-bb-wq",
 			WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
 	if (!pblk->bb_wq)
 		goto free_close_wq;
 
-	if (pblk_set_ppaf(pblk))
+	pblk->r_end_wq = alloc_workqueue("pblk-read-end-wq",
+			WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
+	if (!pblk->r_end_wq)
 		goto free_bb_wq;
+
+	if (pblk_set_ppaf(pblk))
+		goto free_r_end_wq;
 
 	if (pblk_rail_init(pblk))
-		goto free_bb_wq;
+		goto free_r_end_wq;
 
 	if (pblk_rwb_init(pblk))
-		goto free_bb_wq;
+		goto free_rail;
 
 	INIT_LIST_HEAD(&pblk->compl_list);
 	return 0;
 
+free_rail:
+	pblk_rail_tear_down(pblk);
+free_r_end_wq:
+	destroy_workqueue(pblk->r_end_wq);
 free_bb_wq:
 	destroy_workqueue(pblk->bb_wq);
 free_close_wq:
 	destroy_workqueue(pblk->close_wq);
-free_line_meta_pool:
-	mempool_destroy(pblk->line_meta_pool);
 free_w_rq_pool:
 	mempool_destroy(pblk->w_rq_pool);
-free_g_rq_pool:
-	mempool_destroy(pblk->g_rq_pool);
+free_e_rq_pool:
+	mempool_destroy(pblk->e_rq_pool);
+free_r_rq_pool:
+	mempool_destroy(pblk->r_rq_pool);
 free_rec_pool:
 	mempool_destroy(pblk->rec_pool);
-free_blk_ws_pool:
-	mempool_destroy(pblk->line_ws_pool);
-free_page_pool:
-	mempool_destroy(pblk->page_pool);
+free_gen_ws_pool:
+	mempool_destroy(pblk->gen_ws_pool);
+free_page_bio_pool:
+	mempool_destroy(pblk->page_bio_pool);
 	return -ENOMEM;
 }
 
@@ -322,21 +316,23 @@ static void pblk_core_free(struct pblk *pblk)
 	if (pblk->close_wq)
 		destroy_workqueue(pblk->close_wq);
 
+	if (pblk->r_end_wq)
+		destroy_workqueue(pblk->r_end_wq);
+
 	if (pblk->bb_wq)
 		destroy_workqueue(pblk->bb_wq);
 
-	mempool_destroy(pblk->page_pool);
-	mempool_destroy(pblk->line_ws_pool);
+	mempool_destroy(pblk->page_bio_pool);
+	mempool_destroy(pblk->gen_ws_pool);
 	mempool_destroy(pblk->rec_pool);
-	mempool_destroy(pblk->g_rq_pool);
+	mempool_destroy(pblk->r_rq_pool);
+	mempool_destroy(pblk->e_rq_pool);
 	mempool_destroy(pblk->w_rq_pool);
-	mempool_destroy(pblk->line_meta_pool);
 
-	kmem_cache_destroy(pblk_blk_ws_cache);
+	kmem_cache_destroy(pblk_ws_cache);
 	kmem_cache_destroy(pblk_rec_cache);
 	kmem_cache_destroy(pblk_g_rq_cache);
 	kmem_cache_destroy(pblk_w_rq_cache);
-	kmem_cache_destroy(pblk_line_meta_cache);
 }
 
 static void pblk_luns_free(struct pblk *pblk)
@@ -717,8 +713,12 @@ add_emeta_page:
 	}
 
 	lm->emeta_bb = geo->nr_luns - i;
-	lm->min_blk_line = 1 + DIV_ROUND_UP(lm->smeta_sec + lm->emeta_sec[0],
-							geo->sec_per_blk);
+
+	lm->min_blk_line = 1;
+	if (geo->nr_luns > 1)
+		lm->min_blk_line += DIV_ROUND_UP(lm->smeta_sec +
+					lm->emeta_sec[0], geo->sec_per_blk);
+
 	if (lm->min_blk_line > lm->blk_per_line) {
 		pr_err("pblk: config. not supported. Min. LUN in line:%d\n",
 							lm->blk_per_line);

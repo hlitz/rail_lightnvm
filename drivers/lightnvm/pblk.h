@@ -59,10 +59,15 @@
 		for ((i) = 0, rlun = &(pblk)->luns[0]; \
 			(i) < (pblk)->nr_luns; (i)++, rlun = &(pblk)->luns[(i)])
 
-/* READ = 0, WRITE (user) = 1 */
-#define ERASE 2
-#define WRITE_INT 3 /* Internal write. Not through write buffer */
+/* Static pool sizes */
+#define PBLK_GEN_WS_POOL_SIZE (2)
 
+enum {
+	PBLK_READ               = READ,
+	PBLK_WRITE              = WRITE,/* Write coming from block layer - hits write buffer */
+	PBLK_WRITE_INT, /* Internal write - does not hit write buffer */
+	PBLK_ERASE,
+};
 
 enum {
 	/* IO Types */
@@ -259,7 +264,7 @@ struct sec2rb_entry {
 
 struct pblk_rail {
 	unsigned int stride_width;      /* RAIL stride width including parity */
-	struct pblk_line *prev_rq_line; /* Line of in-flight parity write */ 
+	struct pblk_line *prev_rq_line; /* Line of in-flight parity write */
 	unsigned int prev_nr_secs;      /* Number of sectors of in-flight parity write */
 	struct sec2rb_entry **sec2rb;   /* Maps RAIL sectors to rb pos */
 	struct page *pages;             /* Pages to hold parity writes */
@@ -291,6 +296,7 @@ struct pblk_rl {
 	int rb_gc_max;		/* Max buffer entries available for GC I/O */
 	int rb_gc_rsv;		/* Reserved buffer entries for GC I/O */
 	int rb_state;		/* Rate-limiter current state */
+	int rb_max_io;          /* Maximum size for an I/O giving the config */
 
 	atomic_t rb_user_cnt;	/* User I/O buffer counter */
 	atomic_t rb_gc_cnt;	/* GC I/O buffer counter */
@@ -648,20 +654,21 @@ struct pblk {
 
 	struct list_head compl_list;
 
-	mempool_t *page_pool;
-	mempool_t *line_ws_pool;
+	mempool_t *page_bio_pool;
+	mempool_t *gen_ws_pool;
 	mempool_t *rec_pool;
-	mempool_t *g_rq_pool;
+	mempool_t *r_rq_pool;
 	mempool_t *w_rq_pool;
-	mempool_t *line_meta_pool;
+	mempool_t *e_rq_pool;
 
 	struct workqueue_struct *close_wq;
 	struct workqueue_struct *bb_wq;
+	struct workqueue_struct *r_end_wq;
 
 	struct timer_list wtimer;
 
 	struct pblk_gc gc;
-	
+
 	struct pblk_rail rail;
 };
 
@@ -738,10 +745,10 @@ int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd);
 int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line);
 struct bio *pblk_bio_map_addr(struct pblk *pblk, void *data,
 			      unsigned int nr_secs, unsigned int len,
-			      int alloc_type, gfp_t gfp_mask, int reading);
+			      int alloc_type, gfp_t gfp_mask);
 struct pblk_line *pblk_line_get(struct pblk *pblk);
 struct pblk_line *pblk_line_get_first_data(struct pblk *pblk);
-void pblk_line_replace_data(struct pblk *pblk);
+struct pblk_line *pblk_line_replace_data(struct pblk *pblk);
 int pblk_line_recov_alloc(struct pblk *pblk, struct pblk_line *line);
 void pblk_line_recov_close(struct pblk *pblk, struct pblk_line *line);
 struct pblk_line *pblk_line_get_data(struct pblk *pblk);
@@ -755,15 +762,16 @@ void pblk_line_close_meta_sync(struct pblk *pblk);
 void pblk_line_close_ws(struct work_struct *work);
 void pblk_pipeline_stop(struct pblk *pblk);
 void pblk_line_mark_bb(struct work_struct *work);
-void pblk_line_run_ws(struct pblk *pblk, struct pblk_line *line, void *priv,
-		      void (*work)(struct work_struct *),
-		      struct workqueue_struct *wq);
+void pblk_gen_run_ws(struct pblk *pblk, struct pblk_line *line, void *priv,
+		     void (*work)(struct work_struct *), gfp_t gfp_mask,
+		     struct workqueue_struct *wq);
 u64 pblk_line_smeta_start(struct pblk *pblk, struct pblk_line *line);
 int pblk_line_read_smeta(struct pblk *pblk, struct pblk_line *line);
 int pblk_line_read_emeta(struct pblk *pblk, struct pblk_line *line,
 			 void *emeta_buf);
 int pblk_blk_erase_async(struct pblk *pblk, struct ppa_addr erase_ppa);
 void pblk_line_put(struct kref *ref);
+void pblk_line_put_wq(struct kref *ref);
 struct list_head *pblk_line_gc_list(struct pblk *pblk, struct pblk_line *line);
 u64 pblk_lookup_page(struct pblk *pblk, struct pblk_line *line);
 void pblk_dealloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
@@ -835,7 +843,7 @@ int pblk_alloc_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
  * pblk read path
  */
 extern struct bio_set *pblk_bio_set;
-void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd);
+void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd, bool put_line);
 int pblk_submit_read(struct pblk *pblk, struct bio *bio);
 int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq);
 /*
@@ -882,6 +890,7 @@ int pblk_rl_gc_may_insert(struct pblk_rl *rl, int nr_entries);
 void pblk_rl_gc_in(struct pblk_rl *rl, int nr_entries);
 void pblk_rl_out(struct pblk_rl *rl, int nr_user, int nr_gc);
 int pblk_rl_sysfs_rate_show(struct pblk_rl *rl);
+int pblk_rl_max_io(struct pblk_rl *rl);
 void pblk_rl_free_lines_inc(struct pblk_rl *rl, struct pblk_line *line);
 void pblk_rl_free_lines_dec(struct pblk_rl *rl, struct pblk_line *line);
 void pblk_rl_set_space_limit(struct pblk_rl *rl, int entries_left);
@@ -905,11 +914,11 @@ void pblk_rail_tear_down(struct pblk *pblk);
 unsigned int pblk_rail_enabled(struct pblk *pblk);
 u64 pblk_rail_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
 			 int nr_valid, unsigned int sentry);
-void pblk_rail_track_sec(struct pblk *pblk, int cur_sec, int nr_valid, 
-			 int sentry); 
+void pblk_rail_track_sec(struct pblk *pblk, int cur_sec, int nr_valid,
+			 int sentry);
 int pblk_rail_sched_parity(struct pblk *pblk);
 int pblk_rail_submit_write(struct pblk *pblk);
-void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd, 
+void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd,
 				struct pblk_c_ctx *c_ctx);
 unsigned int pblk_rail_sec_per_stripe(struct pblk *pblk);
 unsigned int pblk_rail_dsec_per_stripe(struct pblk *pblk);
@@ -1227,7 +1236,7 @@ static inline int pblk_set_progr_mode(struct pblk *pblk, int type)
 
 	flags = geo->plane_mode >> 1;
 
-	if (type == WRITE)
+	if (type == PBLK_WRITE)
 		flags |= NVM_IO_SCRAMBLE_ENABLE;
 
 	return flags;
@@ -1256,7 +1265,7 @@ static inline int pblk_io_aligned(struct pblk *pblk, int nr_secs)
 	return !(nr_secs % pblk->min_write_pgs);
 }
 
-//#ifdef CONFIG_NVM_DEBUG
+#ifdef CONFIG_NVM_DEBUG
 static inline void print_ppa(struct ppa_addr *p, char *msg, int error)
 {
 	if (p->c.is_cached) {
@@ -1269,7 +1278,7 @@ static inline void print_ppa(struct ppa_addr *p, char *msg, int error)
 			p->g.pg, p->g.pl, p->g.sec);
 	}
 }
-#ifdef CONFIG_NVM_DEBUG
+
 static inline void pblk_print_failed_rqd(struct pblk *pblk, struct nvm_rq *rqd,
 					 int error)
 {
