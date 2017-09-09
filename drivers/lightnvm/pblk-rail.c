@@ -230,10 +230,6 @@ void pblk_rail_tear_down(struct pblk *pblk)
 	unsigned int nr_strides;
 	unsigned int psecs = pblk_rail_psec_per_stripe(pblk);
 
-	if (pblk->rail.prev_rq_line) 
-		for (i = 0; i < pblk->rail.prev_nr_secs; i++) 
-			kref_put(&pblk->rail.prev_rq_line->ref, pblk_line_put);
-
 	nr_strides = pblk_rail_dsec_per_stripe(pblk) / 
 		(pblk->rail.stride_width - 1);	
 
@@ -262,8 +258,8 @@ void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd,
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 
+	pblk_read_put_rqd_kref(pblk, rqd);
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
-	
 	bio_put(rqd->bio);
 	pblk_free_rqd(pblk, rqd, WRITE);
 }
@@ -277,13 +273,6 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	c_ctx->nr_valid = nr_secs;
 	c_ctx->is_rail = true;
 
-	/* Put line refs of the previous RAIL request */
-	if (pblk->rail.prev_rq_line) 
-		for (psec = 0; psec < pblk->rail.prev_nr_secs; psec++) 
-			kref_put(&pblk->rail.prev_rq_line->ref, pblk_line_put);
-
-	pblk->rail.prev_nr_secs = 0;
-	
 	for (psec = 0; psec < nr_secs; psec++) {
 		int stride, sec, i;
 		void *pg_addr = pblk->rail.data[psec];
@@ -428,11 +417,13 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	struct bio *rail_bio = rqd->bio;
 	struct bio *orig_bio = 	r_ctx->private;
 	struct bio_vec src_bv, dst_bv;
+	struct ppa_addr ppa = rqd->ppa_list[0];
+	struct pblk_line *line;
 	void *src_p, *dst_p;
 	int i, hole, n_idx = 0;
 
 	if (rqd->error) 
-		return __pblk_end_io_read(pblk, rqd, true);
+		return __pblk_end_io_read(pblk, rqd, false);
 
 	i = 0;
 	hole = find_first_bit(&r_ctx->bitmap, PBLK_MAX_REQ_ADDRS);
@@ -462,7 +453,10 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 					  hole + 1);
 	} while (hole < r_ctx->nr_orig_secs);
 
-	return __pblk_end_io_read(pblk, rqd, true);
+	line = &pblk->lines[pblk_dev_ppa_to_line(ppa)];
+	kref_put(&line->ref, pblk_line_put_wq);
+
+	return __pblk_end_io_read(pblk, rqd, false);
 }
 
 static void pblk_rail_end_io_read(struct nvm_rq *rqd)

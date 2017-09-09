@@ -142,7 +142,7 @@ static void pblk_read_check(struct pblk *pblk, struct nvm_rq *rqd,
 	}
 }
 
-static void pblk_read_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd)
+void pblk_read_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	struct ppa_addr *ppa_list;
 	int i;
@@ -152,7 +152,7 @@ static void pblk_read_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd)
 	for (i = 0; i < rqd->nr_ppas; i++) {
 		struct ppa_addr ppa = ppa_list[i];
 		struct pblk_line *line;
-
+		
 		line = &pblk->lines[pblk_dev_ppa_to_line(ppa)];
 		kref_put(&line->ref, pblk_line_put_wq);
 	}
@@ -181,7 +181,7 @@ void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 		WARN_ONCE(bio->bi_status, "pblk: corrupted read error\n");
 #endif
 
-	pblk_read_check(pblk, rqd, r_ctx->lba);
+//	pblk_read_check(pblk, rqd, r_ctx->lba);
 
 	bio_put(bio);
 	if (r_ctx->private)
@@ -295,7 +295,7 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	do {
 		int line_id = pblk_dev_ppa_to_line(rqd->ppa_list[i]);
 		struct pblk_line *line = &pblk->lines[line_id];
-
+		BUG();
 		kref_put(&line->ref, pblk_line_put);
 
 		meta_list[hole].lba = lba_list_media[i];

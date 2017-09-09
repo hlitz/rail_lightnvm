@@ -68,8 +68,6 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 				lba_list[paddr] = cpu_to_le64(w_ctx->lba);
 			}
 			else{
-				pblk->rail.prev_rq_line = line;
-				pblk->rail.prev_nr_secs++;
 				line->rail_parity_secs--;
 			}
 		} else {
