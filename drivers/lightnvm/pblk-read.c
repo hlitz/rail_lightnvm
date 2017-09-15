@@ -271,6 +271,7 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	if (rqd->error) {
 		atomic_long_inc(&pblk->read_failed);
 #ifdef CONFIG_NVM_DEBUG
+		printk(KERN_EMERG "PARIAL READ\n");
 		pblk_print_failed_rqd(pblk, rqd, rqd->error);
 #endif
 	}
@@ -367,8 +368,8 @@ retry:
 #ifdef CONFIG_NVM_DEBUG
 			atomic_long_inc(&pblk->cache_reads);
 #endif
-	} else if (pblk_rail_lun_busy(pblk, ppa)) {
-		pblk_rail_setup_ppas(pblk, ppa, &rail_ppa_list[0], &pvalid[0]);
+	} else if (pblk_rail_lun_busy(pblk, ppa) &&
+		   pblk_rail_setup_ppas(pblk, ppa, &rail_ppa_list[0], &pvalid[0])) {
 		WARN_ON(test_and_set_bit(0, rail_bitmap));
 	} else {
 		rqd->ppa_addr = ppa;
@@ -660,6 +661,7 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 	if (rqd.error) {
 		atomic_long_inc(&pblk->read_failed_gc);
 #ifdef CONFIG_NVM_DEBUG
+		printk(KERN_EMERG "GARBAGE READ\n");
 		pblk_print_failed_rqd(pblk, &rqd, rqd.error);
 #endif
 	}

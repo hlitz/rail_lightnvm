@@ -657,7 +657,7 @@ next_rq:
 					addr_to_gen_ppa(pblk, paddr, id);
 			}
 		}
-		pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas);
+		pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas, true);
 	} else {
 		for (i = 0; i < rqd.nr_ppas; ) {
 			struct ppa_addr ppa = addr_to_gen_ppa(pblk, paddr, id);
@@ -813,7 +813,7 @@ static int pblk_line_submit_smeta_io(struct pblk *pblk, struct pblk_line *line,
 	 * the write thread is the only one sending write and erase commands,
 	 * there is no need to take the LUN semaphore.
 	 */
-	pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas);
+	pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas, true);
 
 	ret = pblk_submit_io(pblk, &rqd);
 	if (ret) {
@@ -884,7 +884,7 @@ static int pblk_blk_erase_sync(struct pblk *pblk, struct ppa_addr ppa)
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
 	 */
-	pblk_down_page(pblk, &ppa, rqd.nr_ppas);
+	pblk_down_page(pblk, &ppa, rqd.nr_ppas, true);
 
 	ret = pblk_submit_io(pblk, &rqd);
 	if (ret) {
@@ -1063,6 +1063,7 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
 	int nr_bb = 0;
+	unsigned int stride = 0;
 	u64 off;
 	int bit = -1;
 
@@ -1129,6 +1130,8 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	line->left_msecs = line->sec_in_line;
 	*line->vsc = cpu_to_le32(line->sec_in_line);
 
+	bitmap_copy(line->rail_bitmap, line->invalid_bitmap, lm->sec_per_line);
+
 	/* Mark RAIL parity sectors as bad sectors, so they can be gc'ed */
 	for (off = pblk_rail_dsec_per_stripe(pblk);
 	     off < pblk->lm.sec_per_line;
@@ -1136,14 +1139,30 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 		for (bit = 0; bit < pblk_rail_psec_per_stripe(pblk); bit++) {
 			int set;
 
-			set = !test_and_set_bit(off + bit, line->invalid_bitmap);
+			set = !test_bit(off + bit, line->invalid_bitmap);
+			//set = !test_and_set_bit(off + bit, line->invalid_bitmap);
 			line->rail_parity_secs += set;
 		}
 	}
 
+	/* Initialize RAIL stride ref count. RB sync advance will only happen,
+	   whenever a RAIL stride is fully written to the device */
+	for (off = 0; off < pblk->lm.sec_per_line;
+	     off += pblk_rail_sec_per_stripe(pblk), stride++) {
+		int refs = 0;
+
+		for (bit = 0; bit < pblk_rail_sec_per_stripe(pblk); 
+		     bit += geo->sec_per_pl)
+			if (!test_bit(off + bit, line->invalid_bitmap))
+				refs++;
+
+		refcount_set(&line->strides[stride].ref.refcount, refs);
+	}
+
+
 	if (lm->sec_per_line - line->sec_in_line !=
-	    bitmap_weight(line->invalid_bitmap, lm->sec_per_line) -
-	    line->rail_parity_secs) {
+	    bitmap_weight(line->invalid_bitmap, lm->sec_per_line)){// -
+	    //line->rail_parity_secs) {
 		spin_lock(&line->lock);
 		line->state = PBLK_LINESTATE_BAD;
 		spin_unlock(&line->lock);
@@ -1161,6 +1180,9 @@ static int pblk_line_prepare(struct pblk *pblk, struct pblk_line *line)
 {
 	struct pblk_line_meta *lm = &pblk->lm;
 	int blk_in_line = atomic_read(&line->blk_in_line);
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+	int i;
 
 	line->map_bitmap = kzalloc(lm->sec_bitmap_len, GFP_ATOMIC);
 	if (!line->map_bitmap)
@@ -1171,6 +1193,20 @@ static int pblk_line_prepare(struct pblk *pblk, struct pblk_line *line)
 	if (!line->invalid_bitmap) {
 		kfree(line->map_bitmap);
 		return -ENOMEM;
+	}
+
+        /* will be initialized using bb info from map_bitmap */
+	line->rail_bitmap = kmalloc(lm->sec_bitmap_len, GFP_ATOMIC);
+	if (!line->rail_bitmap) {
+		kfree(line->invalid_bitmap);
+		kfree(line->map_bitmap);
+		return -ENOMEM;
+	}
+
+	line->strides = kmalloc(geo->pgs_per_blk * sizeof(struct rail_stride), GFP_ATOMIC);
+	for (i = 0; i < geo->pgs_per_blk; i++) {
+		line->strides[i].line = line;
+		INIT_LIST_HEAD(&line->strides[i].compl_list);
 	}
 
 	spin_lock(&line->lock);
@@ -1590,7 +1626,7 @@ int pblk_blk_erase_async(struct pblk *pblk, struct ppa_addr ppa)
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
 	 */
-	pblk_down_page(pblk, &ppa, rqd->nr_ppas);
+	pblk_down_page(pblk, &ppa, rqd->nr_ppas, true);
 
 	err = pblk_submit_io(pblk, rqd);
 	if (err) {
@@ -1776,11 +1812,11 @@ void pblk_gen_run_ws(struct pblk *pblk, struct pblk_line *line, void *priv,
 }
 
 static void __pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list,
-			     int nr_ppas, int pos)
+			     int nr_ppas, int pos, bool wait)
 {
 	struct pblk_lun *rlun = &pblk->luns[pos];
 	int ret;
-
+	volatile long timeout = 0;
 	/*
 	 * Only send one inflight I/O per LUN. Since we map at a page
 	 * granurality, all ppas in the I/O will map to the same LUN
@@ -1793,8 +1829,15 @@ static void __pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list,
 				ppa_list[0].g.ch != ppa_list[i].g.ch);
 #endif
 
-
-	while (pblk_rail_luns_busy(pblk, pos)) {}
+	if (wait) {
+		while (pblk_rail_luns_busy(pblk, pos)) {
+			timeout++;
+			if (timeout >= 10000000) {
+				printk(KERN_EMERG " timeout down rail lun busy\n");
+				break;
+			}
+		}
+	}
 
 	ret = down_timeout(&rlun->wr_sem, msecs_to_jiffies(30000));
 	if (ret) {
@@ -1809,13 +1852,13 @@ static void __pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list,
 	}
 }
 
-void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)
+void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas, bool wait)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	int pos = pblk_ppa_to_pos(geo, ppa_list[0]);
 
-	__pblk_down_page(pblk, ppa_list, nr_ppas, pos);
+	__pblk_down_page(pblk, ppa_list, nr_ppas, pos, wait);
 }
 
 void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
@@ -1831,7 +1874,7 @@ void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 	if (test_and_set_bit(pos, lun_bitmap))
 		return;
 
-	__pblk_down_page(pblk, ppa_list, nr_ppas, pos);
+	__pblk_down_page(pblk, ppa_list, nr_ppas, pos, true);
 }
 
 void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)

@@ -415,6 +415,13 @@ struct pblk_smeta {
 	struct line_smeta *buf;		/* smeta buffer in persistent format */
 };
 
+struct rail_stride {
+	struct pblk_line *line;
+	struct kref ref;                /* In flight writes of a stride */
+	struct list_head compl_list;    /* Completed rqds of the stride */
+	unsigned int valid_secs;
+};
+
 struct pblk_line {
 	struct pblk *pblk;
 	unsigned int id;		/* Line number corresponds to the
@@ -446,7 +453,7 @@ struct pblk_line {
 
 	unsigned long *map_bitmap;	/* Bitmap for mapped sectors in line */
 	unsigned long *invalid_bitmap;	/* Bitmap for invalid sectors in line */
-
+  
 	atomic_t left_eblks;		/* Blocks left for erasing */
 	atomic_t left_seblks;		/* Blocks left for sync erasing */
 
@@ -465,6 +472,9 @@ struct pblk_line {
 	unsigned long *stripe_bitmap;   /* Bad block bitmap of the current stripe */
 
 	unsigned int rail_parity_secs;  /* RAIL parity secs in line */
+	unsigned long *rail_bitmap;
+
+	struct rail_stride *strides;
 };
 
 #define PBLK_DATA_LINES 4
@@ -652,7 +662,7 @@ struct pblk {
 	unsigned char *trans_map;
 	spinlock_t trans_lock;
 
-	struct list_head compl_list;
+  	struct list_head compl_list;
 
 	mempool_t *page_bio_pool;
 	mempool_t *gen_ws_pool;
@@ -786,7 +796,7 @@ int pblk_calc_secs(struct pblk *pblk, unsigned long secs_avail,
 void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas);
 void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 		  unsigned long *lun_bitmap);
-void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas);
+void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas, bool wait);
 void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 		unsigned long *lun_bitmap);
 void pblk_end_bio_sync(struct bio *bio);
@@ -818,6 +828,9 @@ int pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
 			unsigned long flags);
 int pblk_write_gc_to_cache(struct pblk *pblk, struct pblk_gc_rq *gc_rq);
 int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd, bool rail_parity);
+unsigned long pblk_end_queued_w_bio(struct pblk *pblk,
+					   struct nvm_rq *rqd,
+				    struct pblk_c_ctx *c_ctx);
 
 /*
  * pblk map
@@ -932,6 +945,7 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 		       unsigned int bio_init_idx, unsigned long *read_bitmap,
 		       struct ppa_addr *rail_ppa_list, unsigned char *pvalid);
 int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd);
+void pblk_rail_stride_put(struct kref *ref);
 
 static inline void *pblk_malloc(size_t size, int type, gfp_t flags)
 {
@@ -973,7 +987,7 @@ static inline int pblk_line_vsc(struct pblk_line *line)
 	return le32_to_cpu(*line->vsc);
 }
 
-#define NVM_MEM_PAGE_WRITE (8)
+#define NVM_MEM_PAGE_WRITE (32)
 
 static inline int pblk_pad_distance(struct pblk *pblk)
 {
@@ -1006,6 +1020,11 @@ static inline int pblk_dev_ppa_to_line(struct ppa_addr p)
 static inline int pblk_tgt_ppa_to_line(struct ppa_addr p)
 {
 	return p.g.blk;
+}
+
+static inline int pblk_dev_ppa_to_pg(struct ppa_addr p)
+{
+	return p.g.pg;
 }
 
 static inline int pblk_ppa_to_pos(struct nvm_geo *geo, struct ppa_addr p)

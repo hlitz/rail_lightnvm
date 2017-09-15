@@ -167,6 +167,11 @@ int pblk_rail_sched_parity(struct pblk *pblk)
 	while (1) {
 		sec_in_stripe = line->cur_sec % pblk_rail_sec_per_stripe(pblk);
 
+		if (sec_in_stripe > pblk_rail_dsec_per_stripe(pblk) &&
+		    (sec_in_stripe < pblk_rail_sec_per_stripe(pblk))){
+		  printk(KERN_EMERG "in railcur sec %i sec ins %i\n", line->cur_sec, sec_in_stripe);
+		  WARN_ON(1);
+		}
 		/* Schedule parity write at end of data section */
 		if (sec_in_stripe == pblk_rail_dsec_per_stripe(pblk))
 			return 1;
@@ -253,6 +258,24 @@ void pblk_rail_compute_parity(void *dest, void *src)
 	}
 }
 
+void pblk_rail_stride_put(struct kref *ref)
+{
+	struct rail_stride *stride = container_of(ref, struct rail_stride, ref);
+	struct pblk_line *line = stride->line;
+	struct pblk *pblk = line->pblk;
+	//struct pblk_c_ctx *c, *r;
+	unsigned long flags;
+	int pos, ret;
+
+	/* Delayed sync of all writes of the current rail stride */ 
+	pos = pblk_rb_sync_init(&pblk->rwb, &flags);
+	ret = pblk_rb_sync_advance(&pblk->rwb, stride->valid_secs);
+	pblk_rb_sync_end(&pblk->rwb, &flags);
+	WARN_ON(ret != pblk_rb_wrap_pos(&pblk->rwb, pos + stride->valid_secs));
+
+	return;
+}
+
 void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd, 
 				struct pblk_c_ctx *c_ctx)
 {
@@ -324,19 +347,16 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 
 int pblk_rail_submit_write(struct pblk *pblk)
 {
-	unsigned int good_psecs;
 	int stripe = pblk_rail_cur_stripe(pblk);
-	int i;
+	int i, e;
 	struct nvm_rq *rqd;
 	struct bio *bio;
 	struct pblk_line *line = pblk_line_get_data(pblk);
 	int start = line->cur_sec;
 	static int last_stripe = ~0x0;
-	int sent = 0;
 
 	BUG_ON(last_stripe == stripe);
 	last_stripe = stripe;
-	good_psecs = pblk_rail_stripe_good_psecs(pblk, stripe);	     
 
 	for (i = start; i < start + pblk_rail_psec_per_stripe(pblk);
 	     i += pblk->min_write_pgs) {
@@ -346,13 +366,22 @@ int pblk_rail_submit_write(struct pblk *pblk)
 		if (test_bit(i, line->map_bitmap))
 			continue;
 
-		sent++;
+		/* This only happens when emeta secs extend into the parity
+		 * region in the last stride of a line */
+		if (!line->rail_parity_secs) {
+		  printk(KERN_EMERG "no rail write as parity secs are: %i cursec: %i\n", line->rail_parity_secs, line->cur_sec);
+		  WARN_ON (!test_bit(i, line->invalid_bitmap));
+		  continue;
+		}
+		for (e = i; e < i + pblk->min_write_pgs; e++)
+		  WARN_ON(test_and_set_bit(e, line->invalid_bitmap));
+
 		rqd = pblk_alloc_rqd(pblk, WRITE);
 		if (IS_ERR(rqd)) {
 			pr_err("pblk: cannot allocate parity write req.\n");
 			return -ENOMEM;
 		}
-
+		
 		bio = bio_alloc(GFP_KERNEL, pblk->min_write_pgs);
 		if (!bio) {
 			pr_err("pblk: cannot allocate parity write bio\n");
@@ -374,10 +403,8 @@ int pblk_rail_submit_write(struct pblk *pblk)
 
 		/* Handle case where emeta starts in the parity region */
 		if (line != pblk_line_get_data(pblk))
-			break;
+			BUG();
 	}
-
-	WARN_ON (sent  * pblk->min_write_pgs != good_psecs);
 
 	return 0;
 }
@@ -422,8 +449,14 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	void *src_p, *dst_p;
 	int i, hole, n_idx = 0;
 
-	if (rqd->error) 
-		return __pblk_end_io_read(pblk, rqd, false);
+	if (rqd->error) { 
+	  int e;
+	  printk(KERN_EMERG "HMM RAIL ERROR %i\n", rqd->nr_ppas);
+	  pblk_print_failed_rqd(pblk, rqd, rqd->error);
+	  for (e=0; e<rqd->nr_ppas; e++)
+	    print_ppa(&rqd->ppa_list[e], "rail read", 777);
+	  return __pblk_end_io_read(pblk, rqd, false);
+	}
 
 	i = 0;
 	hole = find_first_bit(&r_ctx->bitmap, PBLK_MAX_REQ_ADDRS);
@@ -474,27 +507,40 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 	struct nvm_geo *geo = &dev->geo;
 	unsigned int lun_pos = pblk_ppa_to_pos(geo, ppa);
 	unsigned int strides = pblk_rail_nr_parity_luns(pblk);
-	struct pblk_line *line = pblk_line_get_data(pblk);
+	struct pblk_line *line;
 	unsigned int i, ppas = 0;
+	struct ppa_addr orig = ppa;
 
 	for (i = 1; i < pblk->rail.stride_width; i++) {
 		unsigned int neighbor, lun, chnl;
 
 		neighbor = pblk_rail_wrap_lun(pblk, lun_pos + i * strides);
 
-		/* Do not read from bad blocks */
-		if (test_bit(neighbor, line->blk_bitmap))
-			continue;
-
 		lun = pblk_pos_to_lun(geo, neighbor);
 		chnl = pblk_pos_to_chnl(geo, neighbor);
 		pblk_dev_ppa_set_lun(&ppa, lun);
 		pblk_dev_ppa_set_chnl(&ppa, chnl);
-		rail_ppas[ppas++] = ppa;
-		(*pvalid)++; /* Valid (non-bb) reads in stride */
-	}
 
-	return ppas;
+		line = &pblk->lines[pblk_dev_ppa_to_line(ppa)];
+
+		if (test_bit(pblk_dev_ppa_to_line_addr(pblk, ppa), 
+			     line->rail_bitmap)) {
+			continue;
+		}
+
+		/* Do not read from bad blocks */
+		if (test_bit(neighbor, line->blk_bitmap)) {
+			printk(KERN_EMERG "hmm shoudl nt this be caught\n");
+			printk(KERN_EMERG "line is invalid do nt to rail read %lu\n", pblk_dev_ppa_to_line_addr(pblk, ppa));
+			print_ppa(&ppa, "rail errg", 555);
+			continue;
+		}
+		
+		rail_ppas[ppas++] = ppa;
+		(*pvalid)++; /* Valid (non-bb/meta) reads in stride */
+	}
+	//Dont do rail if pvalid == 1, fix RAIL to support nr_ppas == 1
+	return *pvalid > 1;
 }
 
 int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
@@ -511,6 +557,7 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	for (i = 0; i < nr_orig_secs; i++)
 		nr_holes += pvalid[i];
 
+	WARN_ON(nr_holes <= 1);
 	BUG_ON(nr_holes > pblk->rail.stride_width - 1);
 	new_bio = bio_alloc(GFP_KERNEL, nr_holes);
 	if (!new_bio) {
@@ -538,8 +585,12 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 
 	ret = pblk_submit_read_io(pblk, rqd);
 	if (ret) {
+		printk(KERN_EMERG "nr holes %i\n", nr_holes);
+		for (i = 0; i<nr_holes; i++)
+			print_ppa(&rqd->ppa_list[i], "rail read fail", 44);
+
 		bio_put(rqd->bio);
-		pr_err("pblk: read IO submission failed\n");
+		pr_err("pblk: RAIL read IO submission failed\n");
 		goto err_pages;
 	}
 

@@ -22,7 +22,7 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct bio *original_bio;
-	unsigned long ret;
+	unsigned long ret = 0;
 	int i;
 
 	i = 0;
@@ -44,8 +44,9 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	atomic_long_add(rqd->nr_ppas, &pblk->sync_writes);
 #endif
 
-	ret = pblk_rb_sync_advance(&pblk->rwb, c_ctx->nr_valid);
-
+	if (!pblk_rail_enabled(pblk))
+		ret = pblk_rb_sync_advance(&pblk->rwb, c_ctx->nr_valid);
+	
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
 
 	bio_put(rqd->bio);
@@ -54,7 +55,7 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	return ret;
 }
 
-static unsigned long pblk_end_queued_w_bio(struct pblk *pblk,
+unsigned long pblk_end_queued_w_bio(struct pblk *pblk,
 					   struct nvm_rq *rqd,
 					   struct pblk_c_ctx *c_ctx)
 {
@@ -75,11 +76,29 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 
 	pblk_up_rq(pblk, rqd->ppa_list, rqd->nr_ppas, c_ctx->lun_bitmap);
 
-	if (c_ctx->is_rail) {
-		pblk_rail_end_parity_write(pblk, rqd, c_ctx);
+	/* If RAIL is enabled do delayed sync ptr advance so entire strides
+	 * are always either cached or in the device */
+	if (pblk_rail_enabled(pblk)) {
+
+
+		unsigned int stride = pblk_dev_ppa_to_pg(rqd->ppa_list[0]);
+		struct pblk_line *line;
+//		static int rr = 0;
+//		struct pblk_c_ctx *c, *r;
+
+		line = &pblk->lines[pblk_tgt_ppa_to_line(rqd->ppa_list[0])];
+		kref_put(&line->strides[stride].ref, pblk_rail_stride_put);		
+		
+		if (c_ctx->is_rail)
+			pblk_rail_end_parity_write(pblk, rqd, c_ctx);
+		else
+			pblk_end_w_bio(pblk, rqd, c_ctx);
+
+		
+
 		return;
 	}
-
+   
 	pos = pblk_rb_sync_init(&pblk->rwb, &flags);
 	if (pos == c_ctx->sentry) {
 		pos = pblk_end_w_bio(pblk, rqd, c_ctx);
@@ -352,7 +371,7 @@ static inline int pblk_valid_meta_ppa(struct pblk *pblk,
 
 	if (test_bit(pblk_ppa_to_pos(geo, ppa_opt), data_line->blk_bitmap)) {
 		//TODO: FIXME, can we do this?
-		return 0;
+		//return 0;
 		for (i = 0; i < nr_ppas; i += pblk->min_write_pgs)
 			if (ppa_list[i].g.ch == ppa.g.ch &&
 			    ppa_list[i].g.lun == ppa.g.lun)
@@ -426,7 +445,7 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 	}
 
 	if (geo->nr_luns > 1)
-		pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas);
+		pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas, true);
 
 	ret = pblk_submit_io(pblk, rqd);
 	if (ret) {
@@ -493,12 +512,13 @@ int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd,
 
 	if (likely(ppa_empty(erase_ppa))) {
 		/* Submit metadata write for previous data line */
+		pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas);
 		err = pblk_sched_meta_io(pblk, rqd->ppa_list, rqd->nr_ppas);
 		if (err) {
 			pr_err("pblk: metadata I/O submission failed: %d", err);
 			return NVM_IO_ERR;
 		}
-
+		pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas, true);
 		/* Submit data write for current data line */
 		err = pblk_submit_io(pblk, rqd);
 		if (err) {
@@ -607,11 +627,23 @@ fail_put_bio:
 int pblk_write_ts(void *data)
 {
 	struct pblk *pblk = data;
+	struct pblk_line *line = pblk_line_get_data(pblk);
+	unsigned int sec_in_stripe;
 
 	while (!kthread_should_stop()) {
 		if (pblk_rail_sched_parity(pblk))
 			pblk_rail_submit_write(pblk);
 
+		line = pblk_line_get_data(pblk);
+		sec_in_stripe = line->cur_sec % pblk_rail_sec_per_stripe(pblk);
+		if (sec_in_stripe >= pblk_rail_dsec_per_stripe(pblk) &&
+		    (sec_in_stripe < pblk_rail_sec_per_stripe(pblk))) {
+		  
+		  if (!pblk_line_is_full(line)) {
+		    printk(KERN_EMERG "in write __ cur sec %i sec ins %i\n", line->cur_sec, sec_in_stripe); 
+		    WARN_ON(1);
+		  }
+		}
 		if (!pblk_submit_write(pblk))
 			continue;
 		set_current_state(TASK_INTERRUPTIBLE);
