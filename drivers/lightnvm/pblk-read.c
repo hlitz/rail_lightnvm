@@ -38,7 +38,7 @@ static int pblk_read_from_cache(struct pblk *pblk, struct bio *bio,
 						bio_iter, advanced_bio);
 }
 
-static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
+static int pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
 				 sector_t blba, unsigned long *read_bitmap,
 				 struct ppa_addr *rail_ppa_list,
 				 unsigned long *rail_bitmap,
@@ -49,7 +49,8 @@ static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	struct ppa_addr ppas[PBLK_MAX_REQ_ADDRS];
 	int nr_secs = rqd->nr_ppas;
 	bool advanced_bio = false;
-	int i, j = 0, k = 0, v = 0;
+	int i, j = 0, v = 0;
+	int nr_rail_ppas = 0;
 
 	pblk_lookup_l2p_seq(pblk, ppas, blba, nr_secs);
 
@@ -86,14 +87,17 @@ retry:
 			atomic_long_inc(&pblk->cache_reads);
 #endif
 		} else if (pblk_rail_lun_busy(pblk, p) &&
-			   k + pblk->rail.stride_width - 1 <= 64) {
+			   nr_rail_ppas + pblk->rail.stride_width - 1 <= 64 &&
+			   pblk_rail_setup_ppas(pblk, p, 
+						&rail_ppa_list[nr_rail_ppas],
+						&pvalid[v])) {
 			/* RAIL is best effort, perform normal reads in case of
 			 * >64 RAIL ppas
 			 */
-			k += pblk_rail_setup_ppas(pblk, p, &rail_ppa_list[k],
-						  &pvalid[v++]);
+			nr_rail_ppas += pvalid[v];
+			v++;
 			WARN_ON(test_and_set_bit(i, rail_bitmap));
-			advanced_bio = 1;
+			advanced_bio = true;
 		} else {
 			/* Read from media non-cached sectors */
 			rqd->ppa_list[j++] = p;
@@ -104,7 +108,7 @@ next:
 			bio_advance(bio, PBLK_EXPOSED_PAGE_SIZE);
 	}
 
-	if (pblk_io_aligned(pblk, nr_secs))
+	if (pblk_io_aligned(pblk, nr_secs) && v)
 		rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_SEQUENTIAL);
 	else
 		rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_RANDOM);
@@ -112,6 +116,8 @@ next:
 #ifdef CONFIG_NVM_DEBUG
 	atomic_long_add(nr_secs, &pblk->inflight_reads);
 #endif
+
+	return nr_rail_ppas;
 }
 
 int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd)
@@ -152,7 +158,7 @@ void pblk_read_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd)
 	for (i = 0; i < rqd->nr_ppas; i++) {
 		struct ppa_addr ppa = ppa_list[i];
 		struct pblk_line *line;
-		
+
 		line = &pblk->lines[pblk_dev_ppa_to_line(ppa)];
 		kref_put(&line->ref, pblk_line_put_wq);
 	}
@@ -170,7 +176,6 @@ static void pblk_end_user_read(struct bio *bio)
 void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 			       bool put_line)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = rqd->bio;
 
@@ -195,8 +200,7 @@ void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 	atomic_long_sub(rqd->nr_ppas, &pblk->inflight_reads);
 #endif
 
-	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
-	pblk_free_rqd(pblk, rqd, READ);
+	pblk_free_rqd(pblk, rqd, PBLK_READ);
 	atomic_dec(&pblk->inflight_io);
 }
 
@@ -242,13 +246,12 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 
 	new_bio->bi_iter.bi_sector = 0; /* internal bio */
 	bio_set_op_attrs(new_bio, REQ_OP_READ, 0);
-	new_bio->bi_private = &wait;
-	new_bio->bi_end_io = pblk_end_bio_sync;
 
 	rqd->bio = new_bio;
 	rqd->nr_ppas = nr_holes;
 	rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_RANDOM);
-	rqd->end_io = NULL;
+	rqd->end_io = pblk_end_io_sync;
+	rqd->private = &wait;
 
 	if (unlikely(nr_holes == 1)) {
 		ppa_ptr = rqd->ppa_list;
@@ -271,7 +274,6 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	if (rqd->error) {
 		atomic_long_inc(&pblk->read_failed);
 #ifdef CONFIG_NVM_DEBUG
-		printk(KERN_EMERG "PARIAL READ\n");
 		pblk_print_failed_rqd(pblk, rqd, rqd->error);
 #endif
 	}
@@ -296,7 +298,7 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	do {
 		int line_id = pblk_dev_ppa_to_line(rqd->ppa_list[i]);
 		struct pblk_line *line = &pblk->lines[line_id];
-		BUG();
+
 		kref_put(&line->ref, pblk_line_put);
 
 		meta_list[hole].lba = lba_list_media[i];
@@ -320,6 +322,9 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	} while (hole < nr_secs);
 
 	bio_put(new_bio);
+	
+	rqd->bio = bio;
+	rqd->nr_ppas = nr_secs;
 
 	return NVM_IO_OK;
 
@@ -330,7 +335,7 @@ err:
 	return NVM_IO_ERR;
 }
 
-static void pblk_read_rq(struct pblk *pblk, struct nvm_rq *rqd,
+static int pblk_read_rq(struct pblk *pblk, struct nvm_rq *rqd,
 			 sector_t lba, unsigned long *read_bitmap,
 			 struct ppa_addr *rail_ppa_list,
 			 unsigned long *rail_bitmap,
@@ -339,6 +344,7 @@ static void pblk_read_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
 	struct bio *bio = rqd->bio;
 	struct ppa_addr ppa;
+	int nr_rail_ppas = 0;
 
 	pblk_lookup_l2p_seq(pblk, &ppa, lba, 1);
 
@@ -350,7 +356,7 @@ retry:
 	if (pblk_ppa_empty(ppa)) {
 		WARN_ON(test_and_set_bit(0, read_bitmap));
 		meta_list[0].lba = cpu_to_le64(ADDR_EMPTY);
-		return;
+		return 0;
 	}
 
 	/* Try to read from write buffer. The address is later checked on the
@@ -358,6 +364,8 @@ retry:
 	 */
 	if (pblk_addr_in_cache(ppa)) {
 		if (!pblk_read_from_cache(pblk, bio, lba, ppa, 0, 1)) {
+		  printk(KERN_EMERG "tried but could not read from cache\n");
+		  print_ppa(&ppa, "readcache " , 444);
 			pblk_lookup_l2p_seq(pblk, &ppa, lba, 1);
 			goto retry;
 		}
@@ -369,13 +377,17 @@ retry:
 			atomic_long_inc(&pblk->cache_reads);
 #endif
 	} else if (pblk_rail_lun_busy(pblk, ppa) &&
-		   pblk_rail_setup_ppas(pblk, ppa, &rail_ppa_list[0], &pvalid[0])) {
+		   pblk_rail_setup_ppas(pblk, ppa, &rail_ppa_list[0], 
+					&pvalid[0])) {
 		WARN_ON(test_and_set_bit(0, rail_bitmap));
+		nr_rail_ppas += pvalid[0];
 	} else {
 		rqd->ppa_addr = ppa;
 	}
 
 	rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_RANDOM);
+
+	return nr_rail_ppas;
 }
 
 int pblk_submit_read(struct pblk *pblk, struct bio *bio)
@@ -390,6 +402,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	unsigned long rail_bitmap;
 	struct ppa_addr rail_ppa_list[PBLK_MAX_REQ_ADDRS];
 	int ret = NVM_IO_ERR;
+	int nr_rail_ppas;
 
 	/* logic error: lba out-of-bounds. Ignore read request */
 	if (blba >= pblk->rl.nr_secs || nr_secs > PBLK_MAX_REQ_ADDRS) {
@@ -398,23 +411,20 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		return NVM_IO_ERR;
 	}
 
-	bitmap_zero(&read_bitmap, nr_secs);
-	bitmap_zero(&rail_bitmap, nr_secs);
+	bitmap_zero(&read_bitmap, PBLK_MAX_REQ_ADDRS);
+	bitmap_zero(&rail_bitmap, PBLK_MAX_REQ_ADDRS);
 
 	rqd = pblk_alloc_rqd(pblk, PBLK_READ);
-	if (IS_ERR(rqd)) {
-		pr_err_ratelimited("pblk: not able to alloc rqd");
-		return NVM_IO_ERR;
-	}
-	r_ctx = nvm_rq_to_pdu(rqd);
-	r_ctx->lba = blba;
-	memset(r_ctx->pvalid, 0, PBLK_MAX_REQ_ADDRS);
 
 	rqd->opcode = NVM_OP_PREAD;
 	rqd->bio = bio;
 	rqd->nr_ppas = nr_secs;
 	rqd->private = pblk;
 	rqd->end_io = pblk_end_io_read;
+	WARN_ON(rqd->nr_ppas == 0xCAFE);
+	r_ctx = nvm_rq_to_pdu(rqd);
+	r_ctx->lba = blba;
+	memset(r_ctx->pvalid, 0, PBLK_MAX_REQ_ADDRS);
 
 	/* Save the index for this bio's start. This is needed in case
 	 * we need to fill a partial read.
@@ -432,19 +442,21 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;
 		rqd->dma_ppa_list = rqd->dma_meta_list + pblk_dma_meta_size;
 
-		pblk_read_ppalist_rq(pblk, rqd, blba, &read_bitmap, rail_ppa_list,
+		nr_rail_ppas = pblk_read_ppalist_rq(pblk, rqd, blba, &read_bitmap, rail_ppa_list,
 				     &rail_bitmap, r_ctx->pvalid);
 	} else {
-		pblk_read_rq(pblk, rqd, blba, &read_bitmap, rail_ppa_list,
+		nr_rail_ppas = pblk_read_rq(pblk, rqd, blba, &read_bitmap, rail_ppa_list,
 			     &rail_bitmap, r_ctx->pvalid);
 	}
 
 	bio_get(bio);
 	if (bitmap_full(&read_bitmap, nr_secs)) {
+		BUG_ON(!bitmap_empty(&rail_bitmap, nr_secs));
+		BUG_ON(!bitmap_empty(&rail_bitmap, rqd->nr_ppas));
 		bio_endio(bio);
 		atomic_inc(&pblk->inflight_io);
 		__pblk_end_io_read(pblk, rqd, false);
-
+		
 		return NVM_IO_OK;
 	}
 
@@ -474,56 +486,60 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		return NVM_IO_OK;
 	}
 
+	/* Don't do a partial read for RAIL sectors */
+	bitmap_or(&read_bitmap, &read_bitmap, &rail_bitmap, rqd->nr_ppas);
+
 	/* The read bio request could be partially filled by the write buffer,
 	 * but there are some holes that need to be read from the drive.
+	 * If the bitmap is full we have only cached and RAIL reads 
+	 * so don't submit a partial read.
 	 */
-
-	if (!bitmap_empty(&read_bitmap, rqd->nr_ppas)) {
-		BUG(); //see bio completion below
+	if (!bitmap_empty(&read_bitmap, rqd->nr_ppas) &&
+	    !bitmap_full(&read_bitmap, nr_secs)) {
 		ret = pblk_fill_partial_read_bio(pblk, rqd, bio_init_idx, &read_bitmap);
 		if (ret) {
 			pr_err("pblk: failed to perform partial read\n");
 			return ret;
+		}
+		
+		/* Complete the original bio and associated request if there are no RAIL reads*/
+		if (bitmap_empty(&rail_bitmap, rqd->nr_ppas)) {
+			bio_endio(bio);
+			__pblk_end_io_read(pblk, rqd, false);
+
+			return NVM_IO_OK;
 		}
 	}
 
 	/* The read bio requires RAIL reads to be fullfilled.
 	 */
 	if (!bitmap_empty(&rail_bitmap, rqd->nr_ppas)) {
-		if (nr_secs == 1) {
+		//Javier is it a problem to initialize below if we have only one ppa? If not we should do it in all cases above
+		if (nr_secs == 1 /*&& nr_rail_ppas > 1*/) {
 			rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;
 			rqd->dma_ppa_list = rqd->dma_meta_list + pblk_dma_meta_size;
 		}
 
 		r_ctx->private = bio;
 		r_ctx->bitmap = rail_bitmap;
-		r_ctx->nr_orig_secs = bitmap_weight(&rail_bitmap, PBLK_MAX_REQ_ADDRS);
+		r_ctx->bio_init_idx = bio_init_idx;
+		r_ctx->nr_orig_secs_as_rail = bitmap_weight(&rail_bitmap, PBLK_MAX_REQ_ADDRS);
+		r_ctx->nr_orig_secs = nr_secs;
 		rqd->bio = bio;
 
 		ret = pblk_rail_read_bio(pblk, rqd, bio_init_idx, &rail_bitmap,
 					 rail_ppa_list, r_ctx->pvalid);
 		if (ret) {
 			pr_err("pblk: failed to perform RAIL read\n");
-			goto fail_meta_free;
+			return ret;
 		}
 	}
 
-	/* Complete the original bio and associated request */
-	/*rqd->bio = bio;
-	rqd->nr_ppas = nr_secs;
-	rqd->private = pblk;
-	bio_endio(bio);
-	pblk_end_io_read(rqd);
-	*/
-
 	return NVM_IO_OK;
 
-fail_meta_free:
-	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
 fail_rqd_free:
-	pblk_free_rqd(pblk, rqd, READ);
-
-	return NVM_IO_ERR;
+	pblk_free_rqd(pblk, rqd, PBLK_READ);
+	return ret;
 }
 
 static int read_ppalist_rq_gc(struct pblk *pblk, struct nvm_rq *rqd,
@@ -661,7 +677,6 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 	if (rqd.error) {
 		atomic_long_inc(&pblk->read_failed_gc);
 #ifdef CONFIG_NVM_DEBUG
-		printk(KERN_EMERG "GARBAGE READ\n");
 		pblk_print_failed_rqd(pblk, &rqd, rqd.error);
 #endif
 	}

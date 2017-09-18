@@ -40,10 +40,6 @@
 #define PBLK_MAX_REQ_ADDRS (64)
 #define PBLK_MAX_REQ_ADDRS_PW (6)
 
-#define PBLK_WS_POOL_SIZE (128)
-#define PBLK_META_POOL_SIZE (128)
-#define PBLK_READ_REQ_POOL_SIZE (1024)
-
 #define PBLK_NR_CLOSE_JOBS (4)
 
 #define PBLK_CACHE_NAME_LEN (DISK_NAME_LEN + 16)
@@ -121,7 +117,11 @@ struct pblk_g_ctx {
 	void *private;
 	unsigned long bitmap;
 	unsigned int nr_orig_secs;
+	unsigned int nr_orig_secs_as_rail;
 	unsigned char pvalid[PBLK_MAX_REQ_ADDRS];
+	unsigned int bio_init_idx;
+	void *ppa_ptr;
+	dma_addr_t dma_ppa_list;
 	u64 lba;
 };
 
@@ -713,8 +713,8 @@ void pblk_rb_flush(struct pblk_rb *rb);
 
 void pblk_rb_sync_l2p(struct pblk_rb *rb);
 unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct nvm_rq *rqd,
-				 struct bio *bio, unsigned int pos,
-				 unsigned int nr_entries, unsigned int count);
+				 unsigned int pos, unsigned int nr_entries,
+				 unsigned int count);
 unsigned int pblk_rb_read_to_bio_list(struct pblk_rb *rb, struct bio *bio,
 				      struct list_head *list,
 				      unsigned int max);

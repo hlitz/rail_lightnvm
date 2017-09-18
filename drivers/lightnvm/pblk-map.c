@@ -59,24 +59,20 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 		 */
 
 		if (i < valid_secs) {
-			unsigned int stride = pblk_dev_ppa_to_pg(ppa_list[i]);
-			
 			kref_get(&line->ref);
 			line->nr_valid_lbas++;
-			//Javier: Do the 2 lines above need to be protected by a memory barrier, if the end_bio IRQ is handled on a different core?
+
 			if (!rail_parity) {
 				w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry + i);
 				w_ctx->ppa = ppa_list[i];
 				meta_list[i].lba = cpu_to_le64(w_ctx->lba);
 				lba_list[paddr] = cpu_to_le64(w_ctx->lba);
-				line->strides[stride].valid_secs++;
 			}
-			else{
+			else
 				line->rail_parity_secs--;
-			}
 		} else {
 			__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
-
+			WARN_ON(1);
 			lba_list[paddr] = meta_list[i].lba = addr_empty;
 			__pblk_map_invalidate(pblk, line, paddr);
 		}

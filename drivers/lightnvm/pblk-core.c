@@ -147,39 +147,63 @@ static void pblk_invalidate_range(struct pblk *pblk, sector_t slba,
 	spin_unlock(&pblk->trans_lock);
 }
 
-struct nvm_rq *pblk_alloc_rqd(struct pblk *pblk, int rw)
+/* Caller must guarantee that the request is a valid type */
+struct nvm_rq *pblk_alloc_rqd(struct pblk *pblk, int type)
 {
 	mempool_t *pool;
 	struct nvm_rq *rqd;
 	int rq_size;
 
-	if (rw == PBLK_WRITE) {
+	switch (type) {
+	case PBLK_WRITE:
+	case PBLK_WRITE_INT:
 		pool = pblk->w_rq_pool;
 		rq_size = pblk_w_rq_size;
-	} else {
+		break;
+	case PBLK_READ:
 		pool = pblk->r_rq_pool;
+		rq_size = pblk_g_rq_size;
+		break;
+	default:
+		pool = pblk->e_rq_pool;
 		rq_size = pblk_g_rq_size;
 	}
 
 	rqd = mempool_alloc(pool, GFP_KERNEL);
-
 	memset(rqd, 0, rq_size);
+	rqd->nr_ppas = 0xCAFE;
+	rqd->ppa_status = (u64)__builtin_return_address(0);
 
 	return rqd;
 }
 
-void pblk_free_rqd(struct pblk *pblk, struct nvm_rq *rqd, int rw)
+/* Typically used on completion path. Cannot guarantee request consistency */
+void pblk_free_rqd(struct pblk *pblk, struct nvm_rq *rqd, int type)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
 	mempool_t *pool;
 
-	if (rw == PBLK_WRITE)
+	switch (type) {
+	case PBLK_WRITE:
+		kfree(((struct pblk_c_ctx *)nvm_rq_to_pdu(rqd))->lun_bitmap);
+	case PBLK_WRITE_INT:
 		pool = pblk->w_rq_pool;
-	else
+		break;
+	case PBLK_READ:
 		pool = pblk->r_rq_pool;
-
+		break;
+	case PBLK_ERASE:
+		pool = pblk->e_rq_pool;
+		break;
+	default:
+		pr_err("pblk: trying to free unknown rqd type\n");
+		return;
+	}
+	rqd->nr_ppas = 0xCAFE;
+	rqd->ppa_status = (u64)__builtin_return_address(0);
+	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
 	mempool_free(rqd, pool);
 }
-
 void pblk_bio_free_pages(struct pblk *pblk, struct bio *bio, int off,
 			 int nr_pages)
 {
@@ -238,13 +262,6 @@ void pblk_write_should_kick(struct pblk *pblk)
 
 	if (secs_avail >= pblk->min_write_pgs)
 		pblk_write_kick(pblk);
-}
-
-void pblk_end_bio_sync(struct bio *bio)
-{
-	struct completion *waiting = bio->bi_private;
-
-	complete(waiting);
 }
 
 void pblk_end_io_sync(struct nvm_rq *rqd)
@@ -1145,21 +1162,6 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 		}
 	}
 
-	/* Initialize RAIL stride ref count. RB sync advance will only happen,
-	   whenever a RAIL stride is fully written to the device */
-	for (off = 0; off < pblk->lm.sec_per_line;
-	     off += pblk_rail_sec_per_stripe(pblk), stride++) {
-		int refs = 0;
-
-		for (bit = 0; bit < pblk_rail_sec_per_stripe(pblk); 
-		     bit += geo->sec_per_pl)
-			if (!test_bit(off + bit, line->invalid_bitmap))
-				refs++;
-
-		refcount_set(&line->strides[stride].ref.refcount, refs);
-	}
-
-
 	if (lm->sec_per_line - line->sec_in_line !=
 	    bitmap_weight(line->invalid_bitmap, lm->sec_per_line)){// -
 	    //line->rail_parity_secs) {
@@ -1614,9 +1616,7 @@ int pblk_blk_erase_async(struct pblk *pblk, struct ppa_addr ppa)
 	struct nvm_rq *rqd;
 	int err;
 
-	rqd = mempool_alloc(pblk->e_rq_pool, GFP_KERNEL);
-
-	memset(rqd, 0, pblk_g_rq_size);
+	rqd = pblk_alloc_rqd(pblk, PBLK_ERASE);
 
 	pblk_setup_e_rq(pblk, rqd, ppa);
 
@@ -1909,8 +1909,6 @@ void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 		rlun = &pblk->luns[bit];
 		up(&rlun->wr_sem);
 	}
-
-	kfree(lun_bitmap);
 }
 
 void pblk_update_map(struct pblk *pblk, sector_t lba, struct ppa_addr ppa)
