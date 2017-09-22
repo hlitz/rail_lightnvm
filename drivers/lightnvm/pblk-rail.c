@@ -554,8 +554,8 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 		/* Do not read from bad blocks */
 		if (test_bit(pblk_dev_ppa_to_line_addr(pblk, ppa), 
 			     line->rail_bitmap)) {
-			printk(KERN_EMERG "not adding to read\n");
-			/* We cannot recompute the original sec if parity is bad */
+			
+/* We cannot recompute the original sec if parity is bad */
 			if (neighbor >= pblk_rail_nr_data_luns(pblk))
 				return 0;
 			
