@@ -547,7 +547,7 @@ u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line,
 
 	for (i = 0; i < nr_secs; i++, line->cur_sec++) {
 		WARN_ON(test_and_set_bit(line->cur_sec, line->map_bitmap));
-
+		WARN_ON(meta_write && nr_valid != nr_secs);
 		/* Track rb position for later parity RAIL computation.
 		 * Exclude meta writes as they are not latency critical.
 		 * nr_valid sectors equals min_write_pgs except for flushes.
@@ -672,6 +672,7 @@ next_rq:
 				meta_list[i].lba = cpu_to_le64(ADDR_EMPTY);
 				rqd.ppa_list[i] =
 					addr_to_gen_ppa(pblk, paddr, id);
+				pblk_rail_track_sec(pblk, paddr, 0, 0);
 			}
 		}
 		pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas, true);
@@ -774,7 +775,7 @@ static int pblk_line_submit_smeta_io(struct pblk *pblk, struct pblk_line *line,
 	int cmd_op, bio_op;
 	int flags;
 	DECLARE_COMPLETION_ONSTACK(wait);
-
+	
 	if (dir == PBLK_WRITE) {
 		bio_op = REQ_OP_WRITE;
 		cmd_op = NVM_OP_PWRITE;
@@ -822,6 +823,8 @@ static int pblk_line_submit_smeta_io(struct pblk *pblk, struct pblk_line *line,
 			__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
 
 			meta_list[i].lba = lba_list[paddr] = addr_empty;
+			//			printk(KERN_EMERG "sumit s wr %i padd %i\n", dir == PBLK_WRITE, paddr);
+			pblk_rail_track_sec(pblk, paddr, 0, 0);
 		}
 	}
 
@@ -1080,7 +1083,6 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
 	int nr_bb = 0;
-	unsigned int stride = 0;
 	u64 off;
 	int bit = -1;
 

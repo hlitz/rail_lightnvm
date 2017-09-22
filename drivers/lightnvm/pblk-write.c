@@ -404,8 +404,10 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 		paddr = __pblk_alloc_page(pblk, meta_line, rq_ppas, rq_ppas, 0,
 					  false, false);
 		spin_unlock(&meta_line->lock);
-		for (j = 0; j < rq_ppas; j++, i++, paddr++)
+		for (j = 0; j < rq_ppas; j++, i++, paddr++) {
 			rqd->ppa_list[i] = addr_to_gen_ppa(pblk, paddr, id);
+			pblk_rail_track_sec(pblk, paddr, 0, 0);
+		}
 	}
 
 	emeta->mem += rq_len;
@@ -471,7 +473,8 @@ static inline bool pblk_valid_meta_ppa(struct pblk *pblk,
 	    test_bit(pos_opt, data_line->blk_bitmap))
 		return true;
 
-	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)))
+	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)) ||
+	    unlikely((data_line->meta_distance % pblk->rail.stride_width) == 0))
 		data_line->meta_distance--;
 
 	return false;

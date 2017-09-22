@@ -49,7 +49,11 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 	for (i = 0; i < nr_secs; i++, paddr++) {
 		/* ppa to be sent to the device */
 		ppa_list[i] = addr_to_gen_ppa(pblk, paddr, line->id);
+		if(i==0){
+		int stride = pblk_rail_sec_to_stride(pblk, paddr);
+		int idx = pblk_rail_sec_to_idx(pblk, paddr);
 
+		pblk->rail.sec2rb[stride][idx].ppa = ppa_list[0];}
 		/* Write context for target bio completion on write buffer. Note
 		 * that the write buffer is protected by the sync backpointer,
 		 * and a single writer thread have access to each specific entry
@@ -72,7 +76,8 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 				line->rail_parity_secs--;
 		} else {
 			__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
-			WARN_ON(1);
+			
+			WARN_ON(rail_parity);
 			lba_list[paddr] = meta_list[i].lba = addr_empty;
 			__pblk_map_invalidate(pblk, line, paddr);
 		}

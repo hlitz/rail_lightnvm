@@ -260,6 +260,7 @@ struct pblk_gc {
 struct sec2rb_entry {
 	unsigned int pos;               /* Position in the ring buffer */
 	unsigned char nr_valid;         /* Non-padded (flush), valid sectors */
+  struct ppa_addr ppa;
 };
 
 struct pblk_rail {
@@ -919,8 +920,9 @@ void pblk_sysfs_exit(struct gendisk *tdisk);
 /*
  * pblk rail
  */
-#define PBLK_RAIL_BAD_SEC ~0x0
+#define PBLK_RAIL_BAD_SEC (~0x0 - 1000)
 #define PBLK_RAIL_PADDED_SEC (PBLK_RAIL_BAD_SEC - 1)
+#define PBLK_RAIL_EMPTY (PBLK_RAIL_PADDED_SEC - 1)
 #define BYTE_SHIFT 3
 
 int pblk_rail_init(struct pblk *pblk);
@@ -946,6 +948,9 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 		       struct ppa_addr *rail_ppa_list, unsigned char *pvalid);
 int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd);
 void pblk_rail_stride_put(struct kref *ref);
+unsigned int pblk_rail_sec_to_stride(struct pblk *pblk, unsigned int sec);
+
+unsigned int pblk_rail_sec_to_idx(struct pblk *pblk, unsigned int sec);
 
 static inline void *pblk_malloc(size_t size, int type, gfp_t flags)
 {

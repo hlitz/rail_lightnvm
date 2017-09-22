@@ -105,7 +105,7 @@ int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	int lun_pos = pblk_ppa_to_pos(geo, ppa);
-
+	return 1;
 	return smp_load_acquire(&pblk->luns[lun_pos].wr_sem.count) == 0;
 }
 
@@ -207,19 +207,21 @@ int pblk_rail_init(struct pblk *pblk)
 				    GFP_KERNEL);
 	
 	for (i = 0; i < nr_strides; i++) {
-		pblk->rail.sec2rb[i] = kmalloc(pblk->rail.stride_width * 
+		int e;
+		
+		pblk->rail.sec2rb[i] = kmalloc((pblk->rail.stride_width - 1) * 
 					       sizeof(struct sec2rb_entry), 
 					       GFP_KERNEL);
-		memset(pblk->rail.sec2rb[i], 0, pblk->rail.stride_width * 
-		       sizeof(struct sec2rb_entry));
+		for (e = 0; e < pblk->rail.stride_width - 1; e++)
+			pblk->rail.sec2rb[i][e].pos = PBLK_RAIL_EMPTY;
 	}
 
 	pblk->rail.data = kmalloc(psecs * sizeof(void *), GFP_KERNEL);
 	pblk->rail.pages = alloc_pages(GFP_KERNEL, get_count_order(psecs));
 	kaddr = page_address(pblk->rail.pages);
 	
-	for (i = 0; i < psecs; i++)
-		pblk->rail.data[i] = kaddr + (i * pblk->rwb.seg_size);
+	for (i = 0; i < psecs; i++) 
+		pblk->rail.data[i] = kaddr + i * PBLK_EXPOSED_PAGE_SIZE;
 
 	pblk->rail.prev_rq_line = NULL;
 	pblk->rail.prev_nr_secs = 0;
@@ -252,9 +254,16 @@ void pblk_rail_compute_parity(void *dest, void *src)
 {
 	unsigned int i;
 
+	for (i = 0; i < PBLK_EXPOSED_PAGE_SIZE; i++) {
+		((unsigned char*)dest)[i] ^= ((unsigned char *)src)[i];
+
+	}
+//	printk(KERN_EMERG "\n");
+	return;
+
 	for (i = 0; i < PBLK_EXPOSED_PAGE_SIZE / sizeof(unsigned long); i++) {
-		*(unsigned long *)dest ^=
-			*(unsigned long *)src; 
+		((unsigned long *)dest)[i] ^=
+			((unsigned long *)src)[i];
 	}
 }
 
@@ -284,20 +293,24 @@ void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd,
 }
 
 int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd, 
-			  struct bio *bio, unsigned int nr_secs)
+			  struct bio *bio, unsigned int stride,
+			  unsigned int nr_secs)
 {
-	unsigned int psec;
 	struct pblk_c_ctx *c_ctx = nvm_rq_to_pdu(rqd);
+	int sec, i;
+	static long times = 0;
+	times++;
 
 	c_ctx->nr_valid = nr_secs;
 	c_ctx->is_rail = true;
 
-	for (psec = 0; psec < nr_secs; psec++) {
-		int stride, sec, i;
-		void *pg_addr = pblk->rail.data[psec];
+	for (sec = 0; sec < pblk->min_write_pgs; sec++) {
+		void *pg_addr;
 		struct page *page;
-
+		
+		pg_addr = pblk->rail.data[stride * pblk->min_write_pgs + sec];
 		page = virt_to_page(pg_addr);
+		
 		if (!page) {
 			pr_err("pblk: could not allocate RAIL bio page %p\n", pg_addr);
 			return -NVM_IO_ERR;
@@ -309,35 +322,38 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 			return -NVM_IO_ERR;
 		}
 
-		stride = psec / pblk->min_write_pgs;
-		sec = psec % pblk->min_write_pgs;
-
+		memset(pg_addr, 0, PBLK_EXPOSED_PAGE_SIZE);
+		
 		for (i = 0; i < pblk->rail.stride_width - 1; i++) {
+			//if(pblk->rail.sec2rb[stride][i].pos == PBLK_RAIL_EMPTY)
+			//	printk(KERN_EMERG "stride %i i %i sec %i times %lu\n", stride, i, sec , times);
+			BUG_ON(pblk->rail.sec2rb[stride][i].pos == PBLK_RAIL_EMPTY);
 			/* Skip if the sector was bad or padded (flush). */
 			if (pblk->rail.sec2rb[stride][i].pos != PBLK_RAIL_BAD_SEC
 			    && sec < pblk->rail.sec2rb[stride][i].nr_valid) {
 				unsigned int pos; 
 				void *addr;
 				
-				pos = pblk->rail.sec2rb[stride][i].pos + sec;
-				addr = pblk->rwb.entries[pos].data;
-				memcpy(pg_addr, addr, PBLK_EXPOSED_PAGE_SIZE);
-			}
-		}
-		for (; i < pblk->rail.stride_width - 1; i++) {
-			/* Skip if the sector was bad or padded (flush). */
-			if (pblk->rail.sec2rb[stride][i].pos != PBLK_RAIL_BAD_SEC
-			    && sec < pblk->rail.sec2rb[stride][i].nr_valid) {
-				unsigned int pos; 
-				void *addr;
-				
-				pos = pblk->rail.sec2rb[stride][i].pos + sec;
+				pos = pblk->rail.sec2rb[stride][i].pos;
+				pos = pblk_rb_wrap_pos(&pblk->rwb, pos + sec);
 				addr = pblk->rwb.entries[pos].data;
 				pblk_rail_compute_parity(pg_addr, addr);
+				//print_ppa(&pblk->rail.sec2rb[stride][i].ppa, "sadfasd " , 99);
+				//printk(KERN_EMERG "write %lx dest %lx i %i\n", *(unsigned long*)addr, *(unsigned long*)pg_addr, i);
+			}
+			if (sec+1 == pblk->min_write_pgs) {
+				pblk->rail.sec2rb[stride][i].pos = PBLK_RAIL_EMPTY;
+				//printk(KERN_EMERG "wrote stride to EMPTY %i idx %i\n", stride, i);
 			}
 		}
+		/*if(0x10000002accaUL == ((unsigned long*)pg_addr)[0]){ 	
+			int p;
+			for(p=0; p<4; p++)
+				printk(KERN_EMERG "-- pc %lx\n", ((unsigned long*)pg_addr)[p]);
+		
+				}*/
 	}
-	
+
 	return 0;
 }
 
@@ -350,12 +366,13 @@ int pblk_rail_submit_write(struct pblk *pblk)
 	struct pblk_line *line = pblk_line_get_data(pblk);
 	int start = line->cur_sec;
 	static int last_stripe = ~0x0;
+	unsigned int stride = 0;
 
 	BUG_ON(last_stripe == stripe);
 	last_stripe = stripe;
 
 	for (i = start; i < start + pblk_rail_psec_per_stripe(pblk);
-	     i += pblk->min_write_pgs) {
+	     i += pblk->min_write_pgs, stride++) {
 		/* Do not generate parity in this slot if the sec is bad.
 		 * We check on the read path and perform a conventional
 		 * read, to avoid reading parity from the bad block */
@@ -388,8 +405,8 @@ int pblk_rail_submit_write(struct pblk *pblk)
 		bio->bi_iter.bi_sector = 0; /* internal bio */
 		bio_set_op_attrs(bio, REQ_OP_WRITE, 0);
 		rqd->bio = bio;
- 
-		pblk_rail_read_to_bio(pblk, rqd, bio, pblk->min_write_pgs);
+
+		pblk_rail_read_to_bio(pblk, rqd, bio, stride, pblk->min_write_pgs);
 
 		if (pblk_submit_io_set(pblk, rqd, true)) {
 			bio_put(rqd->bio);
@@ -409,29 +426,24 @@ void pblk_rail_track_sec(struct pblk *pblk, int cur_sec, int nr_valid, int sentr
 {
 	int stride = pblk_rail_sec_to_stride(pblk, cur_sec);
 	int idx = pblk_rail_sec_to_idx(pblk, cur_sec);
-	
+
+	if((cur_sec % pblk->min_write_pgs) != 0)
+		return;
+
 	if (nr_valid) {
 		int pos = pblk_rb_wrap_pos(&pblk->rwb, sentry);
 		pblk->rail.sec2rb[stride][idx].pos = pos;
 		pblk->rail.sec2rb[stride][idx].nr_valid = nr_valid;
 	}	
 	else {
+		struct pblk_line *line = pblk_line_get_data(pblk);
+
+		/* Ignore sec for parity computation (write path) */
 		pblk->rail.sec2rb[stride][idx].pos = PBLK_RAIL_BAD_SEC;
+		/* Ignore sec for regenerating parity (read path) */
+		test_and_set_bit(cur_sec, line->rail_bitmap);
 	}
 }			
-/*
-if (meta_write) 
-	pblk->rail.sec2rb[stride][idx].pos = PBLK_RAIL_BAD_SEC;
-else if ((i % pblk->min_write_pgs) == 0 && !parity_write) {
-	unsigned int stride, idx, pos;
-			
-	stride  = pblk_rail_sec_to_stride(pblk, line->cur_sec);
-	idx = pblk_rail_sec_to_idx(pblk, line->cur_sec);
-	pos = pblk_rb_wrap_pos(&pblk->rwb, sentry + i);
-	pblk->rail.sec2rb[stride][idx].pos = pos;
-	pblk->rail.sec2rb[stride][idx].nr_valid = nr_valid;
-	}*/		
-
 
 /* Read Path */
 static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
@@ -444,14 +456,16 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	int i, hole, n_idx = 0;
 	int ttt=0;
 	int orig_ppa = 0;
-
+	static int comps = 0;
 	if (rqd->error) { 
-	  int e;
-	  //	  printk(KERN_EMERG "HMM RAIL ERROR rqd %p addr %lx bio secs %i ppa %i read line %p write line %p\n", rqd, rqd->ppa_status, pblk_get_secs(rail_bio), rqd->nr_ppas, &pblk->lines[pblk_tgt_ppa_to_line(rqd->ppa_list[0])], pblk_line_get_data(pblk));
-	  pblk_print_failed_rqd(pblk, rqd, rqd->error);
-	  for (e=0; e<pblk_get_secs(rail_bio); e++)
-	    print_ppa(&rqd->ppa_list[e], "rail read", 777);
-	  return __pblk_end_io_read(pblk, rqd, false);
+		int e;
+		/* Remove this crap after no read errros appear */
+
+		//	  printk(KERN_EMERG "HMM RAIL ERROR rqd %p addr %lx bio secs %i ppa %i read line %p write line %p\n", rqd, rqd->ppa_status, pblk_get_secs(rail_bio), rqd->nr_ppas, &pblk->lines[pblk_tgt_ppa_to_line(rqd->ppa_list[0])], pblk_line_get_data(pblk));
+		pblk_print_failed_rqd(pblk, rqd, rqd->error);
+		for (e=0; e<pblk_get_secs(rail_bio); e++)
+			print_ppa(&rqd->ppa_list[e], "rail read", 777);
+		return __pblk_end_io_read(pblk, rqd, false);
 	}
 
 	if (unlikely(rqd->nr_ppas == 1)) {
@@ -468,7 +482,7 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	do {
 		int line_id = pblk_dev_ppa_to_line(rqd->ppa_list[orig_ppa]);
 		struct pblk_line *line = &pblk->lines[line_id];
-		int r;
+		int r, p;
 		
 		kref_put(&line->ref, pblk_line_put_wq);
 		orig_ppa += r_ctx->pvalid[i];
@@ -477,19 +491,19 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 		dst_p = kmap_atomic(dst_bv.bv_page);
 
 		memset(dst_p + dst_bv.bv_offset, 0, PBLK_EXPOSED_PAGE_SIZE);
-
+		WARN_ON(dst_bv.bv_offset);
 		for (r = 0; r < r_ctx->pvalid[i]; r++) {
 			src_bv = rail_bio->bi_io_vec[n_idx++];
 			src_p = kmap_atomic(src_bv.bv_page);
 
 			pblk_rail_compute_parity(dst_p + dst_bv.bv_offset,
 						 src_p + src_bv.bv_offset);
-
+			WARN_ON(src_bv.bv_offset);
 			kunmap_atomic(src_p);
 			mempool_free(src_bv.bv_page, pblk->page_bio_pool);
 			ttt++;
 		}
-
+		
 		kunmap_atomic(dst_p);
 
 		i++;
@@ -525,11 +539,6 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 	struct pblk_line *line;
 	unsigned int i, ppas = 0;
 
-
-		if (pblk_boundary_ppa_checks(dev, &ppa, 1)){
-		  printk(KERN_EMERG "BEFORboundary in rail feaild\n");
-		}
-
 	for (i = 1; i < pblk->rail.stride_width; i++) {
 		unsigned int neighbor, lun, chnl;
 
@@ -541,10 +550,16 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 		pblk_dev_ppa_set_chnl(&ppa, chnl);
 
 		line = &pblk->lines[pblk_dev_ppa_to_line(ppa)];
-
+		
 		/* Do not read from bad blocks */
 		if (test_bit(pblk_dev_ppa_to_line_addr(pblk, ppa), 
 			     line->rail_bitmap)) {
+			printk(KERN_EMERG "not adding to read\n");
+			/* We cannot recompute the original sec if parity is bad */
+			if (neighbor >= pblk_rail_nr_data_luns(pblk))
+				return 0;
+			
+                        /* If any other neighbor is bad we can just skip it */
 			continue;
 		}
 
@@ -553,9 +568,6 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 			continue;
 		}
 
-		if (pblk_boundary_ppa_checks(dev, &ppa, 1)){
-		  printk(KERN_EMERG "boundary in rail feaild\n");
-		}
 		rail_ppas[ppas++] = ppa;
 		(*pvalid)++; /* Valid (non-bb/meta) reads in stride */
 	}
