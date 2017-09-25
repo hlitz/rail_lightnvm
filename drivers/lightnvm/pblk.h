@@ -930,8 +930,8 @@ void pblk_rail_tear_down(struct pblk *pblk);
 unsigned int pblk_rail_enabled(struct pblk *pblk);
 u64 pblk_rail_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
 			 int nr_valid, unsigned int sentry);
-void pblk_rail_track_sec(struct pblk *pblk, int cur_sec, int nr_valid,
-			 int sentry);
+void pblk_rail_track_sec(struct pblk *pblk, struct pblk_line *line, int cur_sec, 
+			 int nr_valid, int sentry);
 int pblk_rail_sched_parity(struct pblk *pblk);
 int pblk_rail_submit_write(struct pblk *pblk);
 void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd,

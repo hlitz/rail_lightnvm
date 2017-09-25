@@ -406,7 +406,7 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 		spin_unlock(&meta_line->lock);
 		for (j = 0; j < rq_ppas; j++, i++, paddr++) {
 			rqd->ppa_list[i] = addr_to_gen_ppa(pblk, paddr, id);
-			pblk_rail_track_sec(pblk, paddr, 0, 0);
+			WARN_ON(!test_and_set_bit(paddr, meta_line->map_bitmap));
 		}
 	}
 
@@ -473,8 +473,8 @@ static inline bool pblk_valid_meta_ppa(struct pblk *pblk,
 	    test_bit(pos_opt, data_line->blk_bitmap))
 		return true;
 
-	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)) ||
-	    unlikely((data_line->meta_distance % pblk->rail.stride_width) == 0))
+	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)))// ||
+	  //	    unlikely((data_line->meta_distance % pblk->rail.stride_width) == 0))
 		data_line->meta_distance--;
 
 	return false;
@@ -528,7 +528,6 @@ int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd,
 		pr_err("pblk: data I/O submission failed: %d\n", err);
 		return NVM_IO_ERR;
 	}
-
 	if (!ppa_empty(erase_ppa)) {
 		/* Submit erase for next data line */
 		if (pblk_blk_erase_async(pblk, erase_ppa)) {
@@ -642,7 +641,7 @@ int pblk_write_ts(void *data)
 		    (sec_in_stripe < pblk_rail_sec_per_stripe(pblk))) {
 		  
 		  if (!pblk_line_is_full(line)) {
-		    printk(KERN_EMERG "in write __ cur sec %i sec ins %i\n", line->cur_sec, sec_in_stripe); 
+		    
 		    WARN_ON(1);
 		  }
 		}
