@@ -305,59 +305,6 @@ static int pblk_calc_secs_to_sync(struct pblk *pblk, unsigned int secs_avail,
 
 	return secs_to_sync;
 }
-/*
-static inline int pblk_valid_meta_ppa(struct pblk *pblk,
-				      struct pblk_line *meta_line,
-				      struct ppa_addr *ppa_list, int nr_ppas)
-{
-	struct nvm_tgt_dev *dev = pblk->dev;
-	struct nvm_geo *geo = &dev->geo;
-	struct pblk_line *data_line;
-	struct ppa_addr ppa, ppa_opt;
-	u64 paddr;
-	int i;
-
-	data_line = &pblk->lines[pblk_dev_ppa_to_line(ppa_list[0])];
-	paddr = pblk_lookup_page(pblk, meta_line);
-	ppa = addr_to_gen_ppa(pblk, paddr, 0);
-
-	if (test_bit(pblk_ppa_to_pos(geo, ppa), data_line->blk_bitmap))
-		return 1;
-*/
-	/* Schedule a metadata I/O that is half the distance from the data I/O
-	 * with regards to the number of LUNs forming the pblk instance. This
-	 * balances LUN conflicts across every I/O.
-	 *
-	 * When the LUN configuration changes (e.g., due to GC), this distance
-	 * can align, which would result on a LUN deadlock. In this case, modify
-	 * the distance to not be optimal, but allow metadata I/Os to succeed.
-	 */
-	/*	ppa_opt = addr_to_gen_ppa(pblk, paddr + data_line->meta_distance, 0);
-	if (unlikely(ppa_opt.ppa == ppa.ppa) ||
-	    unlikely((data_line->meta_distance % pblk->rail.stride_width) == 0)) {
-		data_line->meta_distance -=3;
-		return 0;
-	}
-
-	for (i = 0; i < nr_ppas; i += pblk->min_write_pgs)
-		if (ppa_list[i].g.ch == ppa_opt.g.ch &&
-		    ppa_list[i].g.lun == ppa_opt.g.lun) {
-			return 1;
-		}
-
-	if (test_bit(pblk_ppa_to_pos(geo, ppa_opt), data_line->blk_bitmap)) {
-		//TODO: FIXME, can we do this?
-		//return 0;
-		for (i = 0; i < nr_ppas; i += pblk->min_write_pgs)
-			if (ppa_list[i].g.ch == ppa.g.ch &&
-			    ppa_list[i].g.lun == ppa.g.lun)
-				return 0;
-
-		return 1;
-	}
-
-	return 0;
-	}*/
 
 int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 {
@@ -473,8 +420,8 @@ static inline bool pblk_valid_meta_ppa(struct pblk *pblk,
 	    test_bit(pos_opt, data_line->blk_bitmap))
 		return true;
 
-	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)))// ||
-	  //	    unlikely((data_line->meta_distance % pblk->rail.stride_width) == 0))
+	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)) ||
+		unlikely((data_line->meta_distance % pblk->rail.stride_width) == 0))
 		data_line->meta_distance--;
 
 	return false;
@@ -640,10 +587,10 @@ int pblk_write_ts(void *data)
 		if (sec_in_stripe >= pblk_rail_dsec_per_stripe(pblk) &&
 		    (sec_in_stripe < pblk_rail_sec_per_stripe(pblk))) {
 		  
-		  if (!pblk_line_is_full(line)) {
+			if (!pblk_line_is_full(line)) {
 		    
-		    WARN_ON(1);
-		  }
+				WARN_ON(1);
+			}
 		}
 		if (!pblk_submit_write(pblk))
 			continue;

@@ -50,15 +50,6 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 		/* ppa to be sent to the device */
 		ppa_list[i] = addr_to_gen_ppa(pblk, paddr, line->id);
 
-		if(rail_parity && pblk_dev_ppa_to_lun(ppa_list[i]) < 24){
-		  printk(KERN_EMERG "paddr failur %lx\n", paddr);
-		  BUG_ON(pblk_dev_ppa_to_lun(ppa_list[i]) < 24);
-		}
-		if(i==0){
-		int stride = pblk_rail_sec_to_stride(pblk, paddr);
-		int idx = pblk_rail_sec_to_idx(pblk, paddr);
-
-		pblk->rail.sec2rb[stride][idx].ppa = ppa_list[0];}
 		/* Write context for target bio completion on write buffer. Note
 		 * that the write buffer is protected by the sync backpointer,
 		 * and a single writer thread have access to each specific entry
@@ -66,12 +57,6 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 		 * entry we are setting up for submission without taking any
 		 * lock or memory barrier.
 		 */
-		if (pblk_dev_ppa_to_line_addr(pblk,ppa_list[i]) == 170 ||
-		    pblk_dev_ppa_to_line_addr(pblk,ppa_list[i]) == 202 ||
-		    pblk_dev_ppa_to_line_addr(pblk,ppa_list[i]) == 234) {
-		  //printk(KERN_EMERG "WIRTE it val %i parit %i paddr %i\n", valid_secs, rail_parity, paddr);
-		  //print_ppa(&ppa_list[i], "df",9);
-		}
 		if (i < valid_secs) {
 			kref_get(&line->ref);
 			line->nr_valid_lbas++;
@@ -140,10 +125,10 @@ void pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		 * last line.
 		 */
 		e_line = pblk_line_get_erase(pblk);
-		if (!e_line) {
-		  return pblk_map_rq(pblk, rqd, sentry, lun_bitmap,
+		if (!e_line)
+			return pblk_map_rq(pblk, rqd, sentry, lun_bitmap,
 					   valid_secs, i + min, rail_parity);
-		}
+
 		spin_lock(&e_line->lock);
 		if (!test_bit(erase_lun, e_line->erase_bitmap)) {
 			set_bit(erase_lun, e_line->erase_bitmap);
@@ -153,12 +138,12 @@ void pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 			erase_ppa->g.blk = e_line->id;
 
 			spin_unlock(&e_line->lock);
-			
+
 			/* Avoid evaluating e_line->left_eblks */
 			/*return*/
 			pblk_map_rq(pblk, rqd, sentry, lun_bitmap,
 					   valid_secs, i + min, rail_parity);
-			
+
 			return;
 		}
 		spin_unlock(&e_line->lock);
@@ -170,15 +155,14 @@ void pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	 * last line.
 	 */
 	e_line = pblk_line_get_erase(pblk);
-	if (!e_line){
-	   
+	if (!e_line)
 		return;
-	}
+
 	/* Erase blocks that are bad in this line but might not be in next */
 	if (unlikely(ppa_empty(*erase_ppa)) &&
 			bitmap_weight(d_line->blk_bitmap, lm->blk_per_line)) {
 		int bit = -1;
-	
+
 retry:
 		bit = find_next_bit(d_line->blk_bitmap,
 						lm->blk_per_line, bit + 1);

@@ -429,24 +429,6 @@ int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd)
 			spin_unlock(&line->lock);
 		}
 	}
-	if (rqd->opcode != NVM_OP_PREAD) {
-		int i;
-		for (i = 0; i < rqd->nr_ppas; i++) {
-			struct ppa_addr ppa = ppa_list[i];
-			
-			if((ppa.g.ch == 0 &&
-			    ppa.g.lun == 31 &&
-			    ppa.g.blk == 1 &&
-			    ppa.g.pg == 0 &&
-			    ppa.g.pl == 0 &&
-			    ppa.g.sec == 0) ){
-				
-				printk(KERN_EMERG "JADA  ----------------------------------------------- SENT PPA RAIL PAR lun %i opcode %i\n", pblk_dev_ppa_to_lun(ppa_list[i]), rqd->opcode);
-				print_ppa(&ppa_list[i], "jadajada submit io" , 8 );
-				WARN_ON(1);
-			}
-		}
-	}
 #endif
 
 	atomic_inc(&pblk->inflight_io);
@@ -570,10 +552,8 @@ u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line,
 		 * Exclude meta writes as they are not latency critical.
 		 * nr_valid sectors equals min_write_pgs except for flushes.
 		 */
-		if ((i % pblk->min_write_pgs) == 0 && meta_write) {
+		if ((i % pblk->min_write_pgs) == 0 && meta_write)
 			pblk_rail_track_sec(pblk, line, line->cur_sec, 0, 0);
-			printk(KERN_EMERG "meta write track se\n");
-		}
 		else if ((i % pblk->min_write_pgs) == 0 && !parity_write)
 			pblk_rail_track_sec(pblk, line, line->cur_sec, nr_valid, sentry + i);
 	}
@@ -692,7 +672,6 @@ next_rq:
 				meta_list[i].lba = cpu_to_le64(ADDR_EMPTY);
 				rqd.ppa_list[i] =
 					addr_to_gen_ppa(pblk, paddr, id);
-				//pblk_rail_track_sec(pblk, paddr, 0, 0);
 			}
 		}
 		pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas, true);
@@ -843,8 +822,6 @@ static int pblk_line_submit_smeta_io(struct pblk *pblk, struct pblk_line *line,
 			__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
 
 			meta_list[i].lba = lba_list[paddr] = addr_empty;
-			//			printk(KERN_EMERG "sumit s wr %i padd %i\n", dir == PBLK_WRITE, paddr);
-			//pblk_rail_track_sec(pblk, paddr, 0, 0);
 		}
 	}
 
@@ -1105,7 +1082,7 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	int nr_bb = 0;
 	u64 off;
 	int bit = -1;
-	printk(KERN_EMERG "init line %p\n", line);
+
 	line->sec_in_line = lm->sec_per_line;
 
 	/* Capture bad block information on line mapping bitmaps */
@@ -1207,7 +1184,7 @@ static int pblk_line_prepare(struct pblk *pblk, struct pblk_line *line)
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	int i;
-	printk(KERN_EMERG "line prepare!!!!!!!!! %p\n", line);
+
 	line->map_bitmap = kzalloc(lm->sec_bitmap_len, GFP_ATOMIC);
 	if (!line->map_bitmap)
 		return -ENOMEM;
