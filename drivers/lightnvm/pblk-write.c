@@ -349,11 +349,14 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 	for (i = 0; i < rqd->nr_ppas; ) {
 		spin_lock(&meta_line->lock);
 		paddr = __pblk_alloc_page(pblk, meta_line, rq_ppas, rq_ppas, 0,
-					  false, false);
+					  false, true);
 		spin_unlock(&meta_line->lock);
 		for (j = 0; j < rq_ppas; j++, i++, paddr++) {
 			rqd->ppa_list[i] = addr_to_gen_ppa(pblk, paddr, id);
 			WARN_ON(!test_and_set_bit(paddr, meta_line->map_bitmap));
+			WARN_ON(!test_and_set_bit(paddr, meta_line->rail_bitmap));
+			if(rqd->ppa_list[i].g.blk == 0 && rqd->ppa_list[i].g.pg == 33)
+				print_ppa(&rqd->ppa_list[i], "adf" ,9);
 		}
 	}
 

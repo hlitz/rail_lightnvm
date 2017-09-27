@@ -803,7 +803,7 @@ void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 void pblk_end_bio_sync(struct bio *bio);
 void pblk_end_io_sync(struct nvm_rq *rqd);
 int pblk_bio_add_pages(struct pblk *pblk, struct bio *bio, gfp_t flags,
-		       int nr_pages);
+		       int nr_pages, bool zero);
 void pblk_bio_free_pages(struct pblk *pblk, struct bio *bio, int off,
 			 int nr_pages);
 void pblk_map_invalidate(struct pblk *pblk, struct ppa_addr ppa);

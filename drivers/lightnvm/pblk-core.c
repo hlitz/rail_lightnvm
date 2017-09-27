@@ -219,11 +219,12 @@ void pblk_bio_free_pages(struct pblk *pblk, struct bio *bio, int off,
 }
 
 int pblk_bio_add_pages(struct pblk *pblk, struct bio *bio, gfp_t flags,
-		       int nr_pages)
+		       int nr_pages, bool zero)
 {
 	struct request_queue *q = pblk->dev->q;
 	struct page *page;
 	int i, ret;
+	void *addr;
 
 	for (i = 0; i < nr_pages; i++) {
 		page = mempool_alloc(pblk->page_bio_pool, flags);
@@ -233,6 +234,12 @@ int pblk_bio_add_pages(struct pblk *pblk, struct bio *bio, gfp_t flags,
 			pr_err("pblk: could not add page to bio\n");
 			mempool_free(page, pblk->page_bio_pool);
 			goto err;
+		}
+
+		if (zero) {
+			addr = kmap_atomic(page);
+			memset(addr, 0, PBLK_EXPOSED_PAGE_SIZE);
+			kunmap_atomic(addr);
 		}
 	}
 
@@ -417,7 +424,12 @@ int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd)
 		for (i = 0; i < rqd->nr_ppas; i++) {
 			ppa = ppa_list[i];
 			line = &pblk->lines[pblk_dev_ppa_to_line(ppa)];
-
+			/*if (ppa.g.ch == 0 && ppa.g.blk == 7 && ppa.g.pl == 1 && ppa.g.sec == 1 && ppa.g.pg == 0 &&
+			    (ppa.g.lun == 7 || ppa.g.lun == 23 || ppa.g.lun == 31)) {
+				printk(KERN_EMERG "ULUUN %i paddr %i\n", ppa.g.lun, pblk_dev_ppa_to_line_addr(pblk, ppa));
+				WARN_ON(rqd->nr_ppas < 10000);
+				
+				}*/
 			spin_lock(&line->lock);
 			if (line->state != PBLK_LINESTATE_OPEN) {
 				pr_err("pblk: bad ppa: line:%d,state:%d\n",
@@ -537,7 +549,8 @@ u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line,
 			break;
 
 		/* Track bad blocks for later RAIL parity computation */
-		pblk_rail_track_sec(pblk, line, line->cur_sec, 0, 0);
+		//pblk_rail_track_sec(pblk, line, line->cur_sec, 0, 0);
+		WARN_ON(test_and_set_bit(line->cur_sec, line->rail_bitmap));
 
 		line->cur_sec += pblk->min_write_pgs;
 	}
@@ -553,9 +566,10 @@ u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line,
 		 * nr_valid sectors equals min_write_pgs except for flushes.
 		 */
 		if ((i % pblk->min_write_pgs) == 0 && meta_write)
-			pblk_rail_track_sec(pblk, line, line->cur_sec, 0, 0);
-		else if ((i % pblk->min_write_pgs) == 0 && !parity_write)
+			WARN_ON(test_and_set_bit(line->cur_sec, line->rail_bitmap));
+		else if ((i % pblk->min_write_pgs) == 0 && !parity_write){
 			pblk_rail_track_sec(pblk, line, line->cur_sec, nr_valid, sentry + i);
+		}
 	}
 
 	return addr;
@@ -672,6 +686,7 @@ next_rq:
 				meta_list[i].lba = cpu_to_le64(ADDR_EMPTY);
 				rqd.ppa_list[i] =
 					addr_to_gen_ppa(pblk, paddr, id);
+				WARN_ON(!test_and_set_bit(paddr, line->rail_bitmap));
 			}
 		}
 		pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas, true);
@@ -820,7 +835,7 @@ static int pblk_line_submit_smeta_io(struct pblk *pblk, struct pblk_line *line,
 
 		if (dir == PBLK_WRITE) {
 			__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
-
+			WARN_ON(!test_and_set_bit(paddr, line->rail_bitmap));
 			meta_list[i].lba = lba_list[paddr] = addr_empty;
 		}
 	}
@@ -1106,8 +1121,8 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 			break;
 
 		/* Track bad blocks for later RAIL parity computation */
-		pblk_rail_track_sec(pblk, line, off, 0, 0);
-
+		//pblk_rail_track_sec(pblk, line, off, 0, 0);
+		WARN_ON(test_and_set_bit(off, line->rail_bitmap));
 		off += pblk->min_write_pgs;
 	}
 
