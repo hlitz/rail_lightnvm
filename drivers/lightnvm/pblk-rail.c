@@ -127,8 +127,9 @@ int pblk_rail_luns_busy(struct pblk *pblk, int lun_id)
 		 * Also, in theory it should be sufficient to check only the previous
 		 * lun in the stride as luns are always obtained sequentially */
 		/*if (smp_load_acquire(&pblk->luns[neighbor].wr_sem.count) == 0) {
-		 	busy++;
-			}*/
+			return 1;
+		}
+		*/
 		ret = down_timeout(&pblk->luns[neighbor].wr_sem, msecs_to_jiffies(30000));
 		if (ret) {
 			switch (ret) {
@@ -180,11 +181,15 @@ int pblk_rail_sched_parity(struct pblk *pblk)
 	while (1) {
 		sec_in_stripe = line->cur_sec % pblk_rail_sec_per_stripe(pblk);
 
+		/*
 		if (sec_in_stripe > pblk_rail_dsec_per_stripe(pblk) &&
 		    (sec_in_stripe < pblk_rail_sec_per_stripe(pblk))){
-		  printk(KERN_EMERG "in railcur sec %i sec ins %i\n", line->cur_sec, sec_in_stripe);
+		  printk(KERN_EMERG "in railcur sec %i sec ins %i ds %i s %i\n",
+			 line->cur_sec, sec_in_stripe,
+			 pblk_rail_dsec_per_stripe(pblk),
+			 pblk_rail_sec_per_stripe(pblk));
 		  WARN_ON(1);
-		}
+		  }*/
 		/* Schedule parity write at end of data section */
 		if (sec_in_stripe == pblk_rail_dsec_per_stripe(pblk))
 			return 1;
@@ -548,11 +553,12 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 		/* Do not read from bad blocks */
 		if (test_bit(pblk_dev_ppa_to_line_addr(pblk, ppa), 
 			     line->rail_bitmap)) {
-			return 0;
+		  printk(KERN_EMERG "hah one block is bad i %i neigh %i\n", i, neighbor); 
+		  //return 0;
 			/* We cannot recompute the original sec if parity is bad */
 			if (neighbor >= pblk_rail_nr_data_luns(pblk))
 				return 0;
-			
+			printk(KERN_EMERG "we didnt skip because it was not the parity\N");
                         /* If any other neighbor is bad we can just skip it */
 			continue;
 		}

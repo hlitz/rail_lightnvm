@@ -565,11 +565,12 @@ u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line,
 		 * Exclude meta writes as they are not latency critical.
 		 * nr_valid sectors equals min_write_pgs except for flushes.
 		 */
+#ifdef CONFIG_NVM_DEBUG
 		if ((i % pblk->min_write_pgs) == 0 && meta_write)
-			WARN_ON(test_and_set_bit(line->cur_sec, line->rail_bitmap));
-		else if ((i % pblk->min_write_pgs) == 0 && !parity_write){
+			WARN_ON(!test_bit(line->cur_sec, line->rail_bitmap));
+#endif
+		if ((i % pblk->min_write_pgs) == 0 && !parity_write && !meta_write)
 			pblk_rail_track_sec(pblk, line, line->cur_sec, nr_valid, sentry + i);
-		}
 	}
 
 	return addr;
@@ -835,7 +836,8 @@ static int pblk_line_submit_smeta_io(struct pblk *pblk, struct pblk_line *line,
 
 		if (dir == PBLK_WRITE) {
 			__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
-			WARN_ON(!test_and_set_bit(paddr, line->rail_bitmap));
+
+			WARN_ON(test_and_set_bit(paddr, line->rail_bitmap));
 			meta_list[i].lba = lba_list[paddr] = addr_empty;
 		}
 	}
@@ -1120,9 +1122,6 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 		if(!test_bit(off, line->map_bitmap))
 			break;
 
-		/* Track bad blocks for later RAIL parity computation */
-		//pblk_rail_track_sec(pblk, line, off, 0, 0);
-		WARN_ON(test_and_set_bit(off, line->rail_bitmap));
 		off += pblk->min_write_pgs;
 	}
 

@@ -355,8 +355,6 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 			rqd->ppa_list[i] = addr_to_gen_ppa(pblk, paddr, id);
 			WARN_ON(!test_and_set_bit(paddr, meta_line->map_bitmap));
 			WARN_ON(!test_and_set_bit(paddr, meta_line->rail_bitmap));
-			if(rqd->ppa_list[i].g.blk == 0 && rqd->ppa_list[i].g.pg == 33)
-				print_ppa(&rqd->ppa_list[i], "adf" ,9);
 		}
 	}
 
@@ -597,6 +595,7 @@ int pblk_write_ts(void *data)
 		}
 		if (!pblk_submit_write(pblk))
 			continue;
+
 		set_current_state(TASK_INTERRUPTIBLE);
 		io_schedule();
 	}
