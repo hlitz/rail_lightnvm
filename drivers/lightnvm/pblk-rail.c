@@ -457,9 +457,9 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 		/* Remove this crap after no read errros appear */
 
 		//	  printk(KERN_EMERG "HMM RAIL ERROR rqd %p addr %lx bio secs %i ppa %i read line %p write line %p\n", rqd, rqd->ppa_status, pblk_get_secs(rail_bio), rqd->nr_ppas, &pblk->lines[pblk_tgt_ppa_to_line(rqd->ppa_list[0])], pblk_line_get_data(pblk));
-		pblk_print_failed_rqd(pblk, rqd, rqd->error);
-		for (e=0; e<rqd->nr_ppas; e++)
-			print_ppa(&rqd->ppa_list[e], "rail read", 777);
+		//pblk_print_failed_rqd(pblk, rqd, rqd->error);
+		//for (e=0; e<rqd->nr_ppas; e++)
+		//	print_ppa(&rqd->ppa_list[e], "rail read", 777);
 		return __pblk_end_io_read(pblk, rqd, false);
 	}
 	if (unlikely(rqd->nr_ppas == 1)) {
@@ -553,12 +553,10 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 		/* Do not read from bad blocks */
 		if (test_bit(pblk_dev_ppa_to_line_addr(pblk, ppa), 
 			     line->rail_bitmap)) {
-		  printk(KERN_EMERG "hah one block is bad i %i neigh %i\n", i, neighbor); 
-		  //return 0;
 			/* We cannot recompute the original sec if parity is bad */
 			if (neighbor >= pblk_rail_nr_data_luns(pblk))
 				return 0;
-			printk(KERN_EMERG "we didnt skip because it was not the parity\N");
+
                         /* If any other neighbor is bad we can just skip it */
 			continue;
 		}
@@ -621,8 +619,8 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	WARN_ON(rqd->nr_ppas < 1 || rqd->nr_ppas > 64);
 	ret = pblk_submit_read_io(pblk, rqd);
 	if (ret) {
-		for (i = 0; i<nr_holes; i++)
-			print_ppa(&rqd->ppa_list[i], "rail read fail", 44);
+	        //for (i = 0; i<nr_holes; i++)
+		//	print_ppa(&rqd->ppa_list[i], "rail read fail", 44);
 
 		bio_put(rqd->bio);
 		pr_err("pblk: RAIL read IO submission failed\n");

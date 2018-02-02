@@ -547,11 +547,9 @@ u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line,
 	while (1) {
 		if(!test_bit(line->cur_sec, line->map_bitmap))
 			break;
-
-		/* Track bad blocks for later RAIL parity computation */
-		//pblk_rail_track_sec(pblk, line, line->cur_sec, 0, 0);
-		WARN_ON(test_and_set_bit(line->cur_sec, line->rail_bitmap));
-
+#ifdef CONFIG_NVM_DEBUG
+		WARN_ON(!test_and_set_bit(line->cur_sec, line->rail_bitmap));
+#endif
 		line->cur_sec += pblk->min_write_pgs;
 	}
 
@@ -687,7 +685,9 @@ next_rq:
 				meta_list[i].lba = cpu_to_le64(ADDR_EMPTY);
 				rqd.ppa_list[i] =
 					addr_to_gen_ppa(pblk, paddr, id);
+#ifdef CONFIG_NVM_DEBUG
 				WARN_ON(!test_and_set_bit(paddr, line->rail_bitmap));
+#endif
 			}
 		}
 		pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas, true);

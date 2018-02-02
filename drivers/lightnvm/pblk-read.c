@@ -365,7 +365,7 @@ retry:
 	if (pblk_addr_in_cache(ppa)) {
 		if (!pblk_read_from_cache(pblk, bio, lba, ppa, 0, 1)) {
 		  printk(KERN_EMERG "tried but could not read from cache\n");
-		  print_ppa(&ppa, "readcache " , 444);
+		  //print_ppa(&ppa, "readcache " , 444);
 			pblk_lookup_l2p_seq(pblk, &ppa, lba, 1);
 			goto retry;
 		}
