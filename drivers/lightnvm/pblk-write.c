@@ -602,14 +602,7 @@ int pblk_write_ts(void *data)
 
 		line = pblk_line_get_data(pblk);
 		sec_in_stripe = line->cur_sec % pblk_rail_sec_per_stripe(pblk);
-		if (sec_in_stripe >= pblk_rail_dsec_per_stripe(pblk) &&
-		    (sec_in_stripe < pblk_rail_sec_per_stripe(pblk))) {
-		  
-			if (!pblk_line_is_full(line)) {
-		    
-				WARN_ON(1);
-			}
-		}
+
 		if (!pblk_submit_write(pblk))
 			continue;
 
