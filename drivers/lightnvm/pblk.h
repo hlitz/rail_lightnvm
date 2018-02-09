@@ -269,6 +269,10 @@ struct pblk_rail {
 	unsigned int prev_nr_secs;      /* Number of sectors of in-flight parity write */
 	struct sec2rb_entry **sec2rb;   /* Maps RAIL sectors to rb pos */
 	struct page *pages;             /* Pages to hold parity writes */
+	unsigned long reads;
+	unsigned long rail_reads;
+	unsigned long *busy_bitmap;     /* LUNs currently serving a write/erase */
+	int enabled;                    /* Enable RAIL for access types */
 	void **data;                    /* Data pointer to pages */
 };
 
@@ -797,7 +801,8 @@ int pblk_calc_secs(struct pblk *pblk, unsigned long secs_avail,
 void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas);
 void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 		  unsigned long *lun_bitmap);
-void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas, bool wait);
+void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
+		    int wait);
 void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 		unsigned long *lun_bitmap);
 void pblk_end_bio_sync(struct bio *bio);
@@ -924,6 +929,11 @@ void pblk_sysfs_exit(struct gendisk *tdisk);
 #define PBLK_RAIL_PADDED_SEC (PBLK_RAIL_BAD_SEC - 1)
 #define PBLK_RAIL_EMPTY (PBLK_RAIL_PADDED_SEC - 1)
 #define BYTE_SHIFT 3
+enum {
+	PBLK_RAIL_NONE = 0,
+	PBLK_RAIL_WRITE = 1 << 0,
+	PBLK_RAIL_ERASE = 1 << 1,
+};
 
 int pblk_rail_init(struct pblk *pblk);
 void pblk_rail_tear_down(struct pblk *pblk);
@@ -1311,6 +1321,7 @@ static inline void pblk_print_failed_rqd(struct pblk *pblk, struct nvm_rq *rqd,
 
 	if (rqd->nr_ppas ==  1) {
 		print_ppa(&rqd->ppa_addr, "rqd", error);
+
 		return;
 	}
 

@@ -171,8 +171,6 @@ struct nvm_rq *pblk_alloc_rqd(struct pblk *pblk, int type)
 
 	rqd = mempool_alloc(pool, GFP_KERNEL);
 	memset(rqd, 0, rq_size);
-	rqd->nr_ppas = 0xCAFE;
-	rqd->ppa_status = (u64)__builtin_return_address(0);
 
 	return rqd;
 }
@@ -199,8 +197,7 @@ void pblk_free_rqd(struct pblk *pblk, struct nvm_rq *rqd, int type)
 		pr_err("pblk: trying to free unknown rqd type\n");
 		return;
 	}
-	rqd->nr_ppas = 0xCAFE;
-	rqd->ppa_status = (u64)__builtin_return_address(0);
+
 	nvm_dev_dma_free(dev->parent, rqd->meta_list, rqd->dma_meta_list);
 	mempool_free(rqd, pool);
 }
@@ -424,12 +421,7 @@ int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd)
 		for (i = 0; i < rqd->nr_ppas; i++) {
 			ppa = ppa_list[i];
 			line = &pblk->lines[pblk_dev_ppa_to_line(ppa)];
-			/*if (ppa.g.ch == 0 && ppa.g.blk == 7 && ppa.g.pl == 1 && ppa.g.sec == 1 && ppa.g.pg == 0 &&
-			    (ppa.g.lun == 7 || ppa.g.lun == 23 || ppa.g.lun == 31)) {
-				printk(KERN_EMERG "ULUUN %i paddr %i\n", ppa.g.lun, pblk_dev_ppa_to_line_addr(pblk, ppa));
-				WARN_ON(rqd->nr_ppas < 10000);
-				
-				}*/
+
 			spin_lock(&line->lock);
 			if (line->state != PBLK_LINESTATE_OPEN) {
 				pr_err("pblk: bad ppa: line:%d,state:%d\n",
@@ -680,6 +672,7 @@ next_rq:
 			spin_lock(&line->lock);
 			paddr = __pblk_alloc_page(pblk, line, min, min, 0,
 						  false, true);
+
 			spin_unlock(&line->lock);
 			for (j = 0; j < min; j++, i++, paddr++) {
 				meta_list[i].lba = cpu_to_le64(ADDR_EMPTY);
@@ -690,7 +683,7 @@ next_rq:
 #endif
 			}
 		}
-		pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas, true);
+		pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas, PBLK_RAIL_WRITE);
 	} else {
 		for (i = 0; i < rqd.nr_ppas; ) {
 			struct ppa_addr ppa = addr_to_gen_ppa(pblk, paddr, id);
@@ -847,7 +840,7 @@ static int pblk_line_submit_smeta_io(struct pblk *pblk, struct pblk_line *line,
 	 * the write thread is the only one sending write and erase commands,
 	 * there is no need to take the LUN semaphore.
 	 */
-	pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas, true);
+	pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas, PBLK_RAIL_WRITE);
 
 	ret = pblk_submit_io(pblk, &rqd);
 	if (ret) {
@@ -918,7 +911,7 @@ static int pblk_blk_erase_sync(struct pblk *pblk, struct ppa_addr ppa)
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
 	 */
-	pblk_down_page(pblk, &ppa, rqd.nr_ppas, true);
+	pblk_down_page(pblk, &ppa, rqd.nr_ppas, PBLK_RAIL_ERASE);
 
 	ret = pblk_submit_io(pblk, &rqd);
 	if (ret) {
@@ -1641,7 +1634,7 @@ int pblk_blk_erase_async(struct pblk *pblk, struct ppa_addr ppa)
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
 	 */
-	pblk_down_page(pblk, &ppa, rqd->nr_ppas, true);
+	pblk_down_page(pblk, &ppa, rqd->nr_ppas, PBLK_RAIL_ERASE);
 
 	err = pblk_submit_io(pblk, rqd);
 	if (err) {
@@ -1827,7 +1820,7 @@ void pblk_gen_run_ws(struct pblk *pblk, struct pblk_line *line, void *priv,
 }
 
 static void __pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list,
-			     int nr_ppas, int pos, bool wait)
+			     int nr_ppas, int pos, int access_type)
 {
 	struct pblk_lun *rlun = &pblk->luns[pos];
 	int ret;
@@ -1844,7 +1837,7 @@ static void __pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list,
 				ppa_list[0].g.ch != ppa_list[i].g.ch);
 #endif
 
-	if (wait) {
+	if (access_type & pblk->rail.enabled) {
 		while (pblk_rail_luns_busy(pblk, pos)) {
 			timeout++;
 			if (timeout >= 10000000) {
@@ -1865,15 +1858,19 @@ static void __pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list,
 			break;
 		}
 	}
+
+	if (access_type & pblk->rail.enabled)
+		WARN_ON(test_and_set_bit(pos, pblk->rail.busy_bitmap));
 }
 
-void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas, bool wait)
+void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
+		    int access_type)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	int pos = pblk_ppa_to_pos(geo, ppa_list[0]);
 
-	__pblk_down_page(pblk, ppa_list, nr_ppas, pos, wait);
+	__pblk_down_page(pblk, ppa_list, nr_ppas, pos, access_type);
 }
 
 void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
@@ -1889,7 +1886,7 @@ void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 	if (test_and_set_bit(pos, lun_bitmap))
 		return;
 
-	__pblk_down_page(pblk, ppa_list, nr_ppas, pos, true);
+	__pblk_down_page(pblk, ppa_list, nr_ppas, pos, PBLK_RAIL_WRITE);
 }
 
 void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)
@@ -1907,6 +1904,8 @@ void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)
 				ppa_list[0].g.ch != ppa_list[i].g.ch);
 #endif
 
+	clear_bit(pos, pblk->rail.busy_bitmap);
+
 	rlun = &pblk->luns[pos];
 	up(&rlun->wr_sem);
 }
@@ -1921,6 +1920,7 @@ void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 	int bit = -1;
 
 	while ((bit = find_next_bit(lun_bitmap, nr_luns, bit + 1)) < nr_luns) {
+		clear_bit(bit, pblk->rail.busy_bitmap);
 		rlun = &pblk->luns[bit];
 		up(&rlun->wr_sem);
 	}

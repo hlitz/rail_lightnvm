@@ -107,8 +107,14 @@ int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	int lun_pos = pblk_ppa_to_pos(geo, ppa);
+	int ret = test_bit(lun_pos, pblk->rail.busy_bitmap);
 
-	return smp_load_acquire(&pblk->luns[lun_pos].wr_sem.count) == 0;
+	if (ret > 0)
+		pblk->rail.rail_reads++;
+	
+	pblk->rail.reads++;
+	
+	return ret == 0;
 }
 
 int pblk_rail_luns_busy(struct pblk *pblk, int lun_id)
@@ -214,6 +220,7 @@ int pblk_rail_init(struct pblk *pblk)
 	unsigned int nr_strides;
 	unsigned int psecs;
 	void *kaddr;
+	struct pblk_line_meta *lm = &pblk->lm;
 
 	/* Set rail stride with as the very first thing */
 	pblk->rail.stride_width = 4;
@@ -247,9 +254,15 @@ int pblk_rail_init(struct pblk *pblk)
 
 	pblk->rail.prev_rq_line = NULL;
 	pblk->rail.prev_nr_secs = 0;
+	pblk->rail.enabled = (PBLK_RAIL_WRITE | PBLK_RAIL_ERASE);
+	pblk->rail.busy_bitmap = kzalloc(DIV_ROUND_UP(lm->blk_per_line,
+						      BITS_PER_LONG) *
+					 sizeof(unsigned long), GFP_KERNEL);
+	if (!pblk->rail.busy_bitmap)
+		return -ENOMEM;
 
 	printk(KERN_EMERG "Initialized RAIL with stride width %d\n",
-			pblk->rail.stride_width);
+	       pblk->rail.stride_width);
 
 	return 0;
 }
@@ -281,7 +294,7 @@ void pblk_rail_compute_parity(void *dest, void *src)
 		((unsigned char*)dest)[i] ^= ((unsigned char *)src)[i];
 
 	}
-//	printk(KERN_EMERG "\n");
+
 	return;
 
 	for (i = 0; i < PBLK_EXPOSED_PAGE_SIZE / sizeof(unsigned long); i++) {
@@ -386,7 +399,6 @@ int pblk_rail_submit_write(struct pblk *pblk)
 		if (test_bit(i, line->rail_bitmap))
 			continue;
 
-		WARN_ON(test_bit(i, line->rail_bitmap));
 		/* This only happens when emeta secs extend into the parity
 		 * region in the last stride of a line */
 		if (!line->rail_parity_secs) {
@@ -446,17 +458,8 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	int i, hole, n_idx = 0;
 	int ttt=0;
 	int orig_ppa = 0;
-/*	static long blub = 0;
-	blub++;
-	if(blub >= 680){
-		int e;
-		printk(KERN_EMERG "blub %lu\n", blub);
-		for (e=0; e<rqd->nr_ppas; e++)
-			print_ppa(&rqd->ppa_list[e], "rail read", 777);
-	
-			}*/
+
 	if (rqd->error) {
-		int e;
 		/* Remove this crap after no read errros appear */
 
 		//	  printk(KERN_EMERG "HMM RAIL ERROR rqd %p addr %lx bio secs %i ppa %i read line %p write line %p\n", rqd, rqd->ppa_status, pblk_get_secs(rail_bio), rqd->nr_ppas, &pblk->lines[pblk_tgt_ppa_to_line(rqd->ppa_list[0])], pblk_line_get_data(pblk));

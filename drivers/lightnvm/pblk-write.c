@@ -384,7 +384,7 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 		spin_unlock(&l_mg->close_lock);
 	}
 
-	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas, true);
+	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas, PBLK_RAIL_WRITE);
 
 	ret = pblk_submit_io(pblk, rqd);
 	if (ret) {
