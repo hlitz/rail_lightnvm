@@ -136,6 +136,7 @@ void pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 
 			*erase_ppa = rqd->ppa_list[i];
 			erase_ppa->g.blk = e_line->id;
+			erase_ppa->g.pg = 0;
 
 			spin_unlock(&e_line->lock);
 
@@ -180,5 +181,6 @@ retry:
 		atomic_dec(&e_line->left_eblks);
 		*erase_ppa = pblk->luns[bit].bppa; /* set ch and lun */
 		erase_ppa->g.blk = e_line->id;
+		erase_ppa->g.pg = 0;
 	}
 }
