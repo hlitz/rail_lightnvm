@@ -112,7 +112,7 @@ static void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
 	int nr_ppas = rqd->nr_ppas;
 	unsigned int c_entries;
 	int bit, ret;
-
+	
 	if (unlikely(nr_ppas == 1))
 		ppa_list = &rqd->ppa_addr;
 
@@ -124,6 +124,18 @@ static void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
 	while ((bit = find_next_bit(comp_bits, nr_ppas, bit + 1)) < nr_ppas) {
 		struct pblk_rb_entry *entry;
 		struct ppa_addr ppa;
+		struct pblk_line *line;
+
+		line = &pblk->lines[pblk_dev_ppa_to_line(ppa)];
+		
+		/* Mark sec as bad for RAIL */
+		WARN_ON(test_and_set_bit(pblk_dev_ppa_to_line_addr(pblk, ppa), 
+					 line->rail_bitmap));
+		
+		WARN_ON(c_ctx->is_rail);
+		/* Do not retry parity writes (best effort) */
+		if (c_ctx->is_rail)
+			continue;
 
 		/* Logic error */
 		if (bit > c_ctx->nr_valid) {
@@ -144,6 +156,11 @@ static void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
 		 * protecting it with a lock
 		 */
 		list_add_tail(&entry->index, &recovery->failed);
+	}
+
+	if (c_ctx->is_rail) {
+		mempool_free(recovery, pblk->rec_pool);
+		goto out;
 	}
 
 	c_entries = find_first_bit(comp_bits, nr_ppas);
