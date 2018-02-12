@@ -66,6 +66,8 @@ static void __pblk_end_io_erase(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	struct pblk_line *line;
 
+	pblk_up_page(pblk, &rqd->ppa_addr, rqd->nr_ppas);
+	
 	line = &pblk->lines[pblk_ppa_to_line(rqd->ppa_addr)];
 	atomic_dec(&line->left_seblks);
 
@@ -241,7 +243,7 @@ void pblk_bio_free_pages(struct pblk *pblk, struct bio *bio, int off,
 }
 
 int pblk_bio_add_pages(struct pblk *pblk, struct bio *bio, gfp_t flags,
-		       int nr_pages)
+		       int nr_pages, bool zero)
 {
 	struct request_queue *q = pblk->dev->q;
 	struct page *page;
@@ -256,6 +258,14 @@ int pblk_bio_add_pages(struct pblk *pblk, struct bio *bio, gfp_t flags,
 			mempool_free(page, pblk->page_bio_pool);
 			goto err;
 		}
+
+		if (zero) {
+			void * addr;
+
+			addr = kmap_atomic(page);
+			memset(addr, 0, PBLK_EXPOSED_PAGE_SIZE);
+			kunmap_atomic(addr);
+               }
 	}
 
 	return 0;
@@ -520,7 +530,9 @@ void pblk_dealloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs)
 	spin_unlock(&line->lock);
 }
 
-u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs)
+u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
+		      int nr_valid, unsigned int sentry, bool parity_write,
+		      bool meta_write)
 {
 	u64 addr;
 	int i;
@@ -535,13 +547,19 @@ u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs)
 
 	line->cur_sec = addr = find_next_zero_bit(line->map_bitmap,
 					pblk->lm.sec_per_line, line->cur_sec);
-	for (i = 0; i < nr_secs; i++, line->cur_sec++)
+	for (i = 0; i < nr_secs; i++, line->cur_sec++) {
 		WARN_ON(test_and_set_bit(line->cur_sec, line->map_bitmap));
+
+		if ((i % pblk->min_write_pgs) == 0 && !parity_write && !meta_write)
+			pblk_rail_track_sec(pblk, line, line->cur_sec, nr_valid, sentry + i);
+	}
 
 	return addr;
 }
 
-u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs)
+u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
+		    int nr_valid, unsigned int sentry, bool parity_write,
+		    bool meta_write)
 {
 	u64 addr;
 
@@ -549,7 +567,8 @@ u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs)
 	 * failed write buffer entries
 	 */
 	spin_lock(&line->lock);
-	addr = __pblk_alloc_page(pblk, line, nr_secs);
+	addr = __pblk_alloc_page(pblk, line, nr_secs, nr_valid, sentry,
+				 parity_write, meta_write);
 	line->left_msecs -= nr_secs;
 	WARN(line->left_msecs < 0, "pblk: page allocation out of bounds\n");
 	spin_unlock(&line->lock);
@@ -639,7 +658,8 @@ next_rq:
 		rqd.flags = pblk_set_progr_mode(pblk, PBLK_WRITE);
 		for (i = 0; i < rqd.nr_ppas; ) {
 			spin_lock(&line->lock);
-			paddr = __pblk_alloc_page(pblk, line, min);
+			paddr = __pblk_alloc_page(pblk, line, min, min, 0,
+						  false, true);
 			spin_unlock(&line->lock);
 			for (j = 0; j < min; j++, i++, paddr++) {
 				meta_list[i].lba = cpu_to_le64(ADDR_EMPTY);
@@ -647,6 +667,7 @@ next_rq:
 					addr_to_gen_ppa(pblk, paddr, id);
 			}
 		}
+		pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas, PBLK_RAIL_WRITE);
 	} else {
 		for (i = 0; i < rqd.nr_ppas; ) {
 			struct ppa_addr ppa = addr_to_gen_ppa(pblk, paddr, id);
@@ -687,10 +708,15 @@ next_rq:
 
 	ret = pblk_submit_io_sync(pblk, &rqd);
 	if (ret) {
+		if (dir == PBLK_WRITE)
+			pblk_up_page(pblk, rqd.ppa_list, rqd.nr_ppas);
 		pr_err("pblk: emeta I/O submission failed: %d\n", ret);
 		bio_put(bio);
 		goto free_rqd_dma;
 	}
+
+	if (dir == PBLK_WRITE)
+		pblk_up_page(pblk, rqd.ppa_list, rqd.nr_ppas);
 
 	atomic_dec(&pblk->inflight_io);
 
@@ -1079,7 +1105,22 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	line->left_msecs = line->sec_in_line;
 	*line->vsc = cpu_to_le32(line->sec_in_line);
 
-	if (lm->sec_per_line - line->sec_in_line !=
+	bitmap_copy(line->rail_bitmap, line->invalid_bitmap, lm->sec_per_line);
+
+       /* Mark RAIL parity sectors as bad sectors, so they can be gc'ed */
+       for (off = pblk_rail_dsec_per_stripe(pblk);
+            off < pblk->lm.sec_per_line;
+            off += pblk_rail_sec_per_stripe(pblk)) {
+               for (bit = 0; bit < pblk_rail_psec_per_stripe(pblk); bit++) {
+                       int set;
+
+                       set = !test_bit(off + bit, line->invalid_bitmap);
+                       //set = !test_and_set_bit(off + bit, line->invalid_bitmap);
+                       line->rail_parity_secs += set;
+               }
+       }
+
+       if (lm->sec_per_line - line->sec_in_line !=
 		bitmap_weight(line->invalid_bitmap, lm->sec_per_line)) {
 		spin_lock(&line->lock);
 		line->state = PBLK_LINESTATE_BAD;
@@ -1110,6 +1151,14 @@ static int pblk_line_prepare(struct pblk *pblk, struct pblk_line *line)
 		return -ENOMEM;
 	}
 
+        /* will be initialized using bb info from map_bitmap */
+	line->rail_bitmap = kzalloc(lm->sec_bitmap_len, GFP_ATOMIC);
+	if (!line->rail_bitmap) {
+		kfree(line->invalid_bitmap);
+		kfree(line->map_bitmap);
+		return -ENOMEM;
+        }
+	
 	spin_lock(&line->lock);
 	if (line->state != PBLK_LINESTATE_FREE) {
 		kfree(line->map_bitmap);
@@ -1473,11 +1522,13 @@ void pblk_line_free(struct pblk *pblk, struct pblk_line *line)
 {
 	kfree(line->map_bitmap);
 	kfree(line->invalid_bitmap);
+	kfree(line->rail_bitmap);
 
 	*line->vsc = cpu_to_le32(EMPTY_ENTRY);
 
 	line->map_bitmap = NULL;
 	line->invalid_bitmap = NULL;
+	line->rail_bitmap = NULL;
 	line->smeta = NULL;
 	line->emeta = NULL;
 }
@@ -1680,7 +1731,7 @@ void pblk_gen_run_ws(struct pblk *pblk, struct pblk_line *line, void *priv,
 }
 
 static void __pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list,
-			     int nr_ppas, int pos)
+			     int nr_ppas, int pos, int access_type)
 {
 	struct pblk_lun *rlun = &pblk->luns[pos];
 	int ret;
@@ -1697,18 +1748,23 @@ static void __pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list,
 				ppa_list[0].g.ch != ppa_list[i].g.ch);
 #endif
 
+	pblk_rail_down_stripe(pblk, pos, access_type);
+
 	ret = down_timeout(&rlun->wr_sem, msecs_to_jiffies(30000));
 	if (ret == -ETIME || ret == -EINTR)
 		pr_err("pblk: taking lun semaphore timed out: err %d\n", -ret);
+
+	pblk_rail_notify_reader_down(pblk, pos, access_type);
 }
 
-void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)
+void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
+		    int access_type)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	int pos = pblk_ppa_to_pos(geo, ppa_list[0]);
 
-	__pblk_down_page(pblk, ppa_list, nr_ppas, pos);
+	__pblk_down_page(pblk, ppa_list, nr_ppas, pos, access_type);
 }
 
 void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
@@ -1724,7 +1780,7 @@ void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 	if (test_and_set_bit(pos, lun_bitmap))
 		return;
 
-	__pblk_down_page(pblk, ppa_list, nr_ppas, pos);
+	__pblk_down_page(pblk, ppa_list, nr_ppas, pos, PBLK_RAIL_WRITE);
 }
 
 void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)

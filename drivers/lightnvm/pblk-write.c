@@ -235,7 +235,7 @@ static int pblk_alloc_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 }
 
 static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
-			   struct ppa_addr *erase_ppa)
+			   struct ppa_addr *erase_ppa, bool rail_parity)
 {
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct pblk_line *e_line = pblk_line_get_erase(pblk);
@@ -258,10 +258,11 @@ static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	}
 
 	if (likely(!e_line || !atomic_read(&e_line->left_eblks)))
-		pblk_map_rq(pblk, rqd, c_ctx->sentry, lun_bitmap, valid, 0);
+		pblk_map_rq(pblk, rqd, c_ctx->sentry, lun_bitmap, valid, 0,
+			    rail_parity);
 	else
 		pblk_map_erase_rq(pblk, rqd, c_ctx->sentry, lun_bitmap,
-							valid, erase_ppa);
+				  valid, erase_ppa, rail_parity);
 
 	return 0;
 }
@@ -283,7 +284,8 @@ int pblk_setup_w_rec_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	if (ret)
 		return ret;
 
-	pblk_map_rq(pblk, rqd, c_ctx->sentry, lun_bitmap, c_ctx->nr_valid, 0);
+	pblk_map_rq(pblk, rqd, c_ctx->sentry, lun_bitmap, c_ctx->nr_valid, 0,
+		    false);
 
 	rqd->ppa_status = (u64)0;
 	rqd->flags = pblk_set_progr_mode(pblk, PBLK_WRITE);
@@ -352,7 +354,8 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 
 	for (i = 0; i < rqd->nr_ppas; ) {
 		spin_lock(&meta_line->lock);
-		paddr = __pblk_alloc_page(pblk, meta_line, rq_ppas);
+		paddr = __pblk_alloc_page(pblk, meta_line, rq_ppas, rq_ppas,
+					  0, false, true);
 		spin_unlock(&meta_line->lock);
 		for (j = 0; j < rq_ppas; j++, i++, paddr++)
 			rqd->ppa_list[i] = addr_to_gen_ppa(pblk, paddr, id);
@@ -365,7 +368,7 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 		spin_unlock(&l_mg->close_lock);
 	}
 
-	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas);
+	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas, PBLK_RAIL_WRITE);
 
 	ret = pblk_submit_io(pblk, rqd);
 	if (ret) {
@@ -448,7 +451,8 @@ retry:
 	return meta_line;
 }
 
-static int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd)
+int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd,
+		       bool rail_parity)
 {
 	struct ppa_addr erase_ppa;
 	struct pblk_line *meta_line;
@@ -457,7 +461,7 @@ static int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd)
 	pblk_ppa_set_empty(&erase_ppa);
 
 	/* Assign lbas to ppas and populate request structure */
-	err = pblk_setup_w_rq(pblk, rqd, &erase_ppa);
+	err = pblk_setup_w_rq(pblk, rqd, &erase_ppa, rail_parity);
 	if (err) {
 		pr_err("pblk: could not setup write request: %d\n", err);
 		return NVM_IO_ERR;
@@ -550,7 +554,7 @@ static int pblk_submit_write(struct pblk *pblk)
 		goto fail_put_bio;
 	}
 
-	if (pblk_submit_io_set(pblk, rqd))
+	if (pblk_submit_io_set(pblk, rqd, false))
 		goto fail_free_bio;
 
 #ifdef CONFIG_NVM_DEBUG

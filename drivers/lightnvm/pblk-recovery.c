@@ -410,7 +410,8 @@ next_pad_rq:
 		struct ppa_addr ppa;
 		int pos;
 
-		w_ptr = pblk_alloc_page(pblk, line, pblk->min_write_pgs);
+		w_ptr = pblk_alloc_page(pblk, line, pblk->min_write_pgs, 0, 0,
+					false, false);
 		ppa = addr_to_gen_ppa(pblk, w_ptr, line->id);
 		pos = pblk_ppa_to_pos(geo, ppa);
 
@@ -433,7 +434,7 @@ next_pad_rq:
 	}
 
 	kref_get(&pad_rq->ref);
-	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas);
+	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas, PBLK_RAIL_NONE);
 
 	ret = pblk_submit_io(pblk, rqd);
 	if (ret) {
@@ -539,7 +540,8 @@ next_rq:
 		struct ppa_addr ppa;
 		int pos;
 
-		w_ptr = pblk_alloc_page(pblk, line, pblk->min_write_pgs);
+		w_ptr = pblk_alloc_page(pblk, line, pblk->min_write_pgs, 0, 0,
+					false, false);
 		ppa = addr_to_gen_ppa(pblk, w_ptr, line->id);
 		pos = pblk_ppa_to_pos(geo, ppa);
 
@@ -670,7 +672,8 @@ next_rq:
 		struct ppa_addr ppa;
 		int pos;
 
-		paddr = pblk_alloc_page(pblk, line, pblk->min_write_pgs);
+		paddr = pblk_alloc_page(pblk, line, pblk->min_write_pgs, 0, 0,
+					false, false);
 		ppa = addr_to_gen_ppa(pblk, paddr, line->id);
 		pos = pblk_ppa_to_pos(geo, ppa);
 

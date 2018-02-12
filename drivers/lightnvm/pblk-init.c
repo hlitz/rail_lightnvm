@@ -308,12 +308,17 @@ static int pblk_core_init(struct pblk *pblk)
 	if (pblk_set_ppaf(pblk))
 		goto free_r_end_wq;
 
-	if (pblk_rwb_init(pblk))
+	if (pblk_rail_init(pblk))
 		goto free_r_end_wq;
+
+	if (pblk_rwb_init(pblk))
+		goto free_rail;
 
 	INIT_LIST_HEAD(&pblk->compl_list);
 	return 0;
 
+free_rail:
+	pblk_rail_tear_down(pblk);
 free_r_end_wq:
 	destroy_workqueue(pblk->r_end_wq);
 free_bb_wq:
@@ -944,6 +949,7 @@ static void pblk_tear_down(struct pblk *pblk)
 {
 	pblk_pipeline_stop(pblk);
 	pblk_writer_stop(pblk);
+	pblk_rail_tear_down(pblk);
 	pblk_rb_sync_l2p(&pblk->rwb);
 	pblk_rl_free(&pblk->rl);
 

@@ -102,7 +102,7 @@ next:
 #endif
 }
 
-static int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd)
+int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	int err;
 
@@ -130,7 +130,7 @@ static void pblk_read_check(struct pblk *pblk, struct nvm_rq *rqd,
 	}
 }
 
-static void pblk_read_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd)
+void pblk_read_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	struct ppa_addr *ppa_list;
 	int i;
@@ -155,8 +155,8 @@ static void pblk_end_user_read(struct bio *bio)
 	bio_put(bio);
 }
 
-static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
-			       bool put_line)
+void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
+			bool put_line)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
@@ -218,7 +218,7 @@ static int pblk_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 
 	new_bio = bio_alloc(GFP_KERNEL, nr_holes);
 
-	if (pblk_bio_add_pages(pblk, new_bio, GFP_KERNEL, nr_holes))
+	if (pblk_bio_add_pages(pblk, new_bio, GFP_KERNEL, nr_holes, false))
 		goto err;
 
 	if (nr_holes != new_bio->bi_vcnt) {
