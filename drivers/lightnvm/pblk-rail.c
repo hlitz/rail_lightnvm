@@ -114,7 +114,7 @@ int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
 	
 	pblk->rail.reads++;
 	
-	return ret == 0;
+	return ret;
 }
 
 int pblk_rail_luns_busy(struct pblk *pblk, int lun_id)
