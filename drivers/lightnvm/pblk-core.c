@@ -1799,6 +1799,7 @@ void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)
 #endif
 
 	rlun = &pblk->luns[pos];
+	pblk_rail_notify_reader_up(pblk, pos);
 	up(&rlun->wr_sem);
 }
 
