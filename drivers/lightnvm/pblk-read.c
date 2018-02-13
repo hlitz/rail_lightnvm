@@ -143,7 +143,7 @@ static void pblk_read_check(struct pblk *pblk, struct nvm_rq *rqd,
 		if (lba == ADDR_EMPTY)
 			continue;
 
-		WARN(lba != blba + i, "pblk: corrupted read LBA\n");
+		WARN(lba != blba + i, "pblk: corrupted read LBA %lx %lx\n", lba, blba);
 	}
 }
 
@@ -189,7 +189,7 @@ void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 		WARN_ONCE(bio->bi_status, "pblk: corrupted read error\n");
 #endif
 
-	pblk_read_check(pblk, rqd, r_ctx->lba);
+	//pblk_read_check(pblk, rqd, r_ctx->lba);
 
 	bio_put(bio);
 	if (r_ctx->private)
@@ -537,7 +537,9 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		}
 	}
 
-fail_rqd_free:
+	return NVM_IO_OK;
+
+ fail_rqd_free:
 	pblk_free_rqd(pblk, rqd, PBLK_READ);
 	return ret;
 fail_end_io:
