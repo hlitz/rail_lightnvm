@@ -65,8 +65,6 @@ static void pblk_mark_bb(struct pblk *pblk, struct pblk_line *line,
 static void __pblk_end_io_erase(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	struct pblk_line *line;
-
-	pblk_up_page(pblk, &rqd->ppa_addr, rqd->nr_ppas);
 	
 	line = &pblk->lines[pblk_ppa_to_line(rqd->ppa_addr)];
 	atomic_dec(&line->left_seblks);
@@ -90,6 +88,7 @@ static void pblk_end_io_erase(struct nvm_rq *rqd)
 {
 	struct pblk *pblk = rqd->private;
 
+	pblk_up_page(pblk, &rqd->ppa_addr, rqd->nr_ppas);
 	__pblk_end_io_erase(pblk, rqd);
 	mempool_free(rqd, pblk->e_rq_pool);
 }
@@ -816,13 +815,17 @@ static int pblk_line_submit_smeta_io(struct pblk *pblk, struct pblk_line *line,
 	 * the write thread is the only one sending write and erase commands,
 	 * there is no need to take the LUN semaphore.
 	 */
+	pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas, PBLK_RAIL_WRITE);
+
 	ret = pblk_submit_io_sync(pblk, &rqd);
 	if (ret) {
+		pblk_up_page(pblk, rqd.ppa_list, rqd.nr_ppas);
 		pr_err("pblk: smeta I/O submission failed: %d\n", ret);
 		bio_put(bio);
 		goto free_ppa_list;
 	}
 
+	pblk_up_page(pblk, rqd.ppa_list, rqd.nr_ppas);
 	atomic_dec(&pblk->inflight_io);
 
 	if (rqd.error) {
@@ -874,11 +877,14 @@ static int pblk_blk_erase_sync(struct pblk *pblk, struct ppa_addr ppa)
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
 	 */
+	pblk_down_page(pblk, &ppa, rqd.nr_ppas, PBLK_RAIL_ERASE);
+
 	ret = pblk_submit_io_sync(pblk, &rqd);
 	if (ret) {
 		struct nvm_tgt_dev *dev = pblk->dev;
 		struct nvm_geo *geo = &dev->geo;
 
+		pblk_up_page(pblk, &ppa, rqd.nr_ppas);
 		pr_err("pblk: could not sync erase line:%d,blk:%d\n",
 					pblk_ppa_to_line(ppa),
 					pblk_ppa_to_pos(geo, ppa));
@@ -886,6 +892,7 @@ static int pblk_blk_erase_sync(struct pblk *pblk, struct ppa_addr ppa)
 		rqd.error = ret;
 		goto out;
 	}
+	pblk_up_page(pblk, &ppa, rqd.nr_ppas);
 
 out:
 	rqd.private = pblk;
@@ -1607,6 +1614,8 @@ int pblk_blk_erase_async(struct pblk *pblk, struct ppa_addr ppa)
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
 	 */
+	pblk_down_page(pblk, &ppa, rqd->nr_ppas, PBLK_RAIL_ERASE);
+
 	err = pblk_submit_io(pblk, rqd);
 	if (err) {
 		struct nvm_tgt_dev *dev = pblk->dev;
@@ -1814,6 +1823,7 @@ void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 
 	while ((bit = find_next_bit(lun_bitmap, nr_luns, bit + 1)) < nr_luns) {
 		rlun = &pblk->luns[bit];
+		pblk_rail_notify_reader_up(pblk, bit);
 		up(&rlun->wr_sem);
 	}
 }
