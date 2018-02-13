@@ -84,6 +84,11 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 
 	pblk_up_rq(pblk, rqd->ppa_list, rqd->nr_ppas, c_ctx->lun_bitmap);
 
+	if (c_ctx->is_rail) {
+		pblk_rail_end_parity_write(pblk, rqd, c_ctx);
+		return;
+	}
+
 	pos = pblk_rb_sync_init(&pblk->rwb, &flags);
 	if (pos == c_ctx->sentry) {
 		pos = pblk_end_w_bio(pblk, rqd, c_ctx);
@@ -130,8 +135,18 @@ static void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
 	while ((bit = find_next_bit(comp_bits, nr_ppas, bit + 1)) < nr_ppas) {
 		struct pblk_rb_entry *entry;
 		struct ppa_addr ppa;
+		struct pblk_line *line;
 
-		/* Logic error */
+		/* Mark sec as bad for RAIL */
+		line = &pblk->lines[pblk_ppa_to_line(ppa)];
+		WARN_ON(test_and_set_bit(pblk_dev_ppa_to_line_addr(pblk, ppa),
+					 line->rail_bitmap));
+		WARN_ON(c_ctx->is_rail);
+		/* Do not retry parity writes (best effort) */
+		if (c_ctx->is_rail)
+			continue;
+
+	       /* Logic error */
 		if (bit > c_ctx->nr_valid) {
 			WARN_ONCE(1, "pblk: corrupted write request\n");
 			mempool_free(recovery, pblk->rec_pool);
@@ -150,6 +165,11 @@ static void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
 		 * protecting it with a lock
 		 */
 		list_add_tail(&entry->index, &recovery->failed);
+	}
+
+	if (c_ctx->is_rail) {
+		mempool_free(recovery, pblk->rec_pool);
+		goto out;
 	}
 
 	c_entries = find_first_bit(comp_bits, nr_ppas);
@@ -421,7 +441,8 @@ static inline bool pblk_valid_meta_ppa(struct pblk *pblk,
 				test_bit(pos_opt, data_line->blk_bitmap))
 		return true;
 
-	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)))
+	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)) ||
+	    unlikely((data_line->meta_distance % pblk->rail.stride_width) == 0))
 		data_line->meta_distance--;
 
 	return false;
@@ -577,6 +598,8 @@ int pblk_write_ts(void *data)
 	struct pblk *pblk = data;
 
 	while (!kthread_should_stop()) {
+		if (pblk_rail_sched_parity(pblk))
+			pblk_rail_submit_write(pblk);
 		if (!pblk_submit_write(pblk))
 			continue;
 		set_current_state(TASK_INTERRUPTIBLE);
