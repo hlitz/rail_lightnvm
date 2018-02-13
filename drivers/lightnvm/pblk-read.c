@@ -143,7 +143,7 @@ static void pblk_read_check(struct pblk *pblk, struct nvm_rq *rqd,
 		if (lba == ADDR_EMPTY)
 			continue;
 
-		WARN(lba != blba + i, "pblk: corrupted read LBA %lx %lx\n", lba, blba);
+		WARN(lba != blba + i, "pblk: corrupted read LBA %lx %lx\n", (unsigned long)lba, (unsigned long)blba);
 	}
 }
 
