@@ -453,7 +453,9 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *rail_bio = rqd->bio;
 	struct bio *orig_bio = r_ctx->private;
+	struct pblk_sec_meta *meta_list = rqd->meta_list;
 	struct bio_vec src_bv, dst_bv;
+	__le64 *lba_list_mem, *lba_list_media;
 	void *src_p, *dst_p;
 	int i, hole, n_idx = 0;
 	int ttt=0;
@@ -477,6 +479,15 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 		rqd->ppa_list[0] = ppa;
 	}
 
+	/* Re-use allocated memory for intermediate lbas */
+	lba_list_mem = (((void *)rqd->ppa_list) + pblk_dma_ppa_size);
+	lba_list_media = (((void *)rqd->ppa_list) + 2 * pblk_dma_ppa_size);
+	for (i = 0; i < r_ctx->nr_orig_secs; i++) {
+		lba_list_media[i] = meta_list[i].lba;
+		meta_list[i].lba = lba_list_mem[i];
+		printk(KERN_EMERG "done meta list %lx lbal list mem %lx\n", lba_list_media[i], meta_list[i].lba);
+	}
+
 	i = 0;
 	hole = find_first_bit(&r_ctx->bitmap, PBLK_MAX_REQ_ADDRS);
 	do {
@@ -485,6 +496,9 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 		int r;
 
 		kref_put(&line->ref, pblk_line_put_wq);
+
+		meta_list[hole].lba = lba_list_media[i];
+		printk(KERN_EMERG "meta list hole %lx\n", meta_list[hole].lba);
 		orig_ppa += r_ctx->pvalid[i];
 
 		dst_bv = orig_bio->bi_io_vec[r_ctx->bio_init_idx + hole];
@@ -585,11 +599,16 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 		       struct ppa_addr *rail_ppa_list, unsigned char *pvalid)
 {
 	struct bio *new_bio, *bio = rqd->bio;
+	struct pblk_sec_meta *meta_list = rqd->meta_list;
 	int nr_orig_secs_as_rail = bitmap_weight(read_bitmap, PBLK_MAX_REQ_ADDRS);
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	unsigned char nr_holes = 0;
-	DECLARE_COMPLETION_ONSTACK(wait);
+	__le64 *lba_list_mem, *lba_list_media;
 	int i, ret;
+
+	/* Re-use allocated memory for intermediate lbas */
+	lba_list_mem = (((void *)rqd->ppa_list) + pblk_dma_ppa_size);
+	lba_list_media = (((void *)rqd->ppa_list) + 2 * pblk_dma_ppa_size);
 
 	for (i = 0; i < nr_orig_secs_as_rail; i++)
 		nr_holes += pvalid[i];
@@ -602,6 +621,11 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	if (nr_holes != new_bio->bi_vcnt) {
 		pr_err("pblk: malformed bio\n");
 		goto err_pages;
+	}
+
+	for (i = 0; i < r_ctx->nr_orig_secs; i++) {
+		lba_list_mem[i] = meta_list[i].lba;
+		printk(KERN_EMERG "vvefore send lballist %lx\n", lba_list_mem[i]);
 	}
 
 	new_bio->bi_iter.bi_sector = 0; /* internal bio */
