@@ -485,7 +485,7 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	for (i = 0; i < r_ctx->nr_orig_secs; i++) {
 		lba_list_media[i] = meta_list[i].lba;
 		meta_list[i].lba = lba_list_mem[i];
-		printk(KERN_EMERG "done meta list %lx lbal list mem %lx\n", lba_list_media[i], meta_list[i].lba);
+		//printk(KERN_EMERG "done meta list %lx lbal list mem %lx\n", lba_list_media[i], meta_list[i].lba);
 	}
 
 	i = 0;
@@ -498,7 +498,7 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 		kref_put(&line->ref, pblk_line_put_wq);
 
 		meta_list[hole].lba = lba_list_media[i];
-		printk(KERN_EMERG "meta list hole %lx\n", meta_list[hole].lba);
+		//printk(KERN_EMERG "meta list hole %lx\n", meta_list[hole].lba);
 		orig_ppa += r_ctx->pvalid[i];
 
 		dst_bv = orig_bio->bi_io_vec[r_ctx->bio_init_idx + hole];
@@ -625,7 +625,7 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 
 	for (i = 0; i < r_ctx->nr_orig_secs; i++) {
 		lba_list_mem[i] = meta_list[i].lba;
-		printk(KERN_EMERG "vvefore send lballist %lx\n", lba_list_mem[i]);
+		//printk(KERN_EMERG "vvefore send lballist %lx\n", lba_list_mem[i]);
 	}
 
 	new_bio->bi_iter.bi_sector = 0; /* internal bio */
