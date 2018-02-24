@@ -96,7 +96,7 @@ unsigned int pblk_rail_wrap_lun(struct pblk *pblk, unsigned int lun)
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	
-	return (lun & (geo->nr_luns - 1));
+	return (lun & (geo->all_luns - 1));
 }
 
 /* Sem count is a shared variable but as RAIL is only best effort we don't lock
@@ -290,17 +290,8 @@ void pblk_rail_compute_parity(void *dest, void *src)
 {
 	unsigned int i;
 
-	for (i = 0; i < PBLK_EXPOSED_PAGE_SIZE; i++) {
-		((unsigned char*)dest)[i] ^= ((unsigned char *)src)[i];
-
-	}
-
-	return;
-
-	for (i = 0; i < PBLK_EXPOSED_PAGE_SIZE / sizeof(unsigned long); i++) {
-		((unsigned long *)dest)[i] ^=
-			((unsigned long *)src)[i];
-	}
+	for (i = 0; i < PBLK_EXPOSED_PAGE_SIZE / sizeof(unsigned long); i++)
+		((unsigned long *)dest)[i] ^= ((unsigned long *)src)[i];
 }
 
 void pblk_rail_stride_put(struct kref *ref)
@@ -462,12 +453,9 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	int orig_ppa = 0;
 
 	if (rqd->error) {
-		/* Remove this crap after no read errros appear */
-
-		//	  printk(KERN_EMERG "HMM RAIL ERROR rqd %p addr %lx bio secs %i ppa %i read line %p write line %p\n", rqd, rqd->ppa_status, pblk_get_secs(rail_bio), rqd->nr_ppas, &pblk->lines[pblk_tgt_ppa_to_line(rqd->ppa_list[0])], pblk_line_get_data(pblk));
-		//pblk_print_failed_rqd(pblk, rqd, rqd->error);
-		//for (e=0; e<rqd->nr_ppas; e++)
-		//	print_ppa(&rqd->ppa_list[e], "rail read", 777);
+	  int e;
+		for (e=0; e<rqd->nr_ppas; e++)
+		  print_ppa(&rqd->ppa_list[e], "rail read error", rqd->error);
 		return __pblk_end_io_read(pblk, rqd, false);
 	}
 	if (unlikely(rqd->nr_ppas == 1)) {

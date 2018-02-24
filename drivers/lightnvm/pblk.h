@@ -1005,7 +1005,7 @@ static inline int pblk_line_vsc(struct pblk_line *line)
 	return le32_to_cpu(*line->vsc);
 }
 
-#define NVM_MEM_PAGE_WRITE (8)
+#define NVM_MEM_PAGE_WRITE (16)
 
 static inline int pblk_pad_distance(struct pblk *pblk)
 {

@@ -388,7 +388,7 @@ static int __pblk_rb_may_write(struct pblk_rb *rb, unsigned int nr_entries,
 	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
-	int rail_delay = geo->nr_luns * pblk->min_write_pgs;
+	int rail_delay = geo->all_luns * pblk->min_write_pgs;
 
 	sync = READ_ONCE(rb->sync);
 	mem = READ_ONCE(rb->mem);
