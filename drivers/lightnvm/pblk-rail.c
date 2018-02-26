@@ -18,17 +18,22 @@
 
 unsigned int pblk_rail_enabled(struct pblk *pblk)
 {
-	return pblk->rail.stride_width > 0;
+  	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+
+	return geo->rail_stride_width > 0;
 }
 
 unsigned int pblk_rail_nr_parity_luns(struct pblk *pblk)
 {
 	struct pblk_line_meta *lm = &pblk->lm;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 
 	if (!pblk_rail_enabled(pblk))
 		return 0;
 		
-	return lm->blk_per_line / pblk->rail.stride_width;
+	return lm->blk_per_line / geo->rail_stride_width;
 }
 
 unsigned int pblk_rail_nr_data_luns(struct pblk *pblk)
@@ -56,8 +61,10 @@ unsigned int pblk_rail_psec_per_stripe(struct pblk *pblk)
 unsigned int pblk_rail_dsec_per_stripe(struct pblk *pblk)
 {
 	unsigned int dsecs;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 
-	dsecs = (pblk->rail.stride_width - 1) *
+	dsecs = (geo->rail_stride_width - 1) *
 		pblk_rail_psec_per_stripe(pblk);
 
 	BUG_ON(dsecs != (pblk_rail_sec_per_stripe(pblk) -
@@ -119,11 +126,13 @@ int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
 
 int pblk_rail_luns_busy(struct pblk *pblk, int lun_id)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	int i;
 	unsigned int strides = pblk_rail_nr_parity_luns(pblk);
 	int ret;
 
-	for (i = 0; i < pblk->rail.stride_width; i++) {
+	for (i = 0; i < geo->rail_stride_width; i++) {
 		unsigned int neighbor;
 
 		neighbor = pblk_rail_wrap_lun(pblk, lun_id + i * strides);
@@ -183,21 +192,17 @@ int pblk_rail_stripe_open(struct pblk *pblk, unsigned int sec)
 
 int pblk_rail_sched_parity(struct pblk *pblk)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct pblk_line *line = pblk_line_get_data(pblk);
 	unsigned int sec_in_stripe;
+
+	if (!geo->rail_stride_width)
+		return 0;
 
 	while (1) {
 		sec_in_stripe = line->cur_sec % pblk_rail_sec_per_stripe(pblk);
 
-		/*
-		if (sec_in_stripe > pblk_rail_dsec_per_stripe(pblk) &&
-		    (sec_in_stripe < pblk_rail_sec_per_stripe(pblk))){
-		  printk(KERN_EMERG "in railcur sec %i sec ins %i ds %i s %i\n",
-			 line->cur_sec, sec_in_stripe,
-			 pblk_rail_dsec_per_stripe(pblk),
-			 pblk_rail_sec_per_stripe(pblk));
-		  WARN_ON(1);
-		  }*/
 		/* Schedule parity write at end of data section */
 		if (sec_in_stripe == pblk_rail_dsec_per_stripe(pblk))
 			return 1;
@@ -216,19 +221,29 @@ int pblk_rail_sched_parity(struct pblk *pblk)
 
 int pblk_rail_init(struct pblk *pblk)
 {
+	struct pblk_line_meta *lm = &pblk->lm;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	unsigned int i;
 	unsigned int nr_strides;
 	unsigned int psecs;
 	void *kaddr;
-	struct pblk_line_meta *lm = &pblk->lm;
+	printk(KERN_EMERG "stride widhth %i\n", geo->rail_stride_width);
+	if (geo->rail_stride_width == 0) {
+		pblk->rail.enabled = 0;
+		return 0;
+	}
 
-	/* Set rail stride with as the very first thing */
-	pblk->rail.stride_width = 4;
+	if (((geo->all_luns % geo->rail_stride_width) != 0) ||
+	    (geo->all_luns < geo->rail_stride_width)) {
+		pr_err("pblk: unsupported RAIL stride width\n");
+		return -EINVAL;
+	}
 
 	psecs = pblk_rail_psec_per_stripe(pblk);
 
 	nr_strides = pblk_rail_dsec_per_stripe(pblk) / 
-		(pblk->rail.stride_width - 1);
+		(geo->rail_stride_width - 1);
 
 	pblk->rail.sec2rb = kmalloc(nr_strides * sizeof(struct sec2rb_entry *),
 				    GFP_KERNEL);
@@ -236,10 +251,10 @@ int pblk_rail_init(struct pblk *pblk)
 	for (i = 0; i < nr_strides; i++) {
 		int e;
 		
-		pblk->rail.sec2rb[i] = kmalloc((pblk->rail.stride_width - 1) *
+		pblk->rail.sec2rb[i] = kmalloc((geo->rail_stride_width - 1) *
 					       sizeof(struct sec2rb_entry),
 					       GFP_KERNEL);
-		for (e = 0; e < pblk->rail.stride_width - 1; e++) {
+		for (e = 0; e < geo->rail_stride_width - 1; e++) {
 			pblk->rail.sec2rb[i][e].pos = PBLK_RAIL_EMPTY;
 			pblk->rail.sec2rb[i][e].nr_valid = ~0x0;
 		}
@@ -262,19 +277,21 @@ int pblk_rail_init(struct pblk *pblk)
 		return -ENOMEM;
 
 	printk(KERN_EMERG "Initialized RAIL with stride width %d\n",
-	       pblk->rail.stride_width);
+	       geo->rail_stride_width);
 
 	return 0;
 }
 
 void pblk_rail_tear_down(struct pblk *pblk)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	unsigned int i;
 	unsigned int nr_strides;
 	unsigned int psecs = pblk_rail_psec_per_stripe(pblk);
 
 	nr_strides = pblk_rail_dsec_per_stripe(pblk) /
-		(pblk->rail.stride_width - 1);
+		(geo->rail_stride_width - 1);
 
 	for (i = 0; i < nr_strides; i++)
 		kfree(pblk->rail.sec2rb[i]);
@@ -323,8 +340,11 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 			  struct bio *bio, unsigned int stride,
 			  unsigned int nr_secs, unsigned int paddr)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct pblk_c_ctx *c_ctx = nvm_rq_to_pdu(rqd);
 	int sec, i;
+	int nr_data = geo->rail_stride_width - 1;
 	struct pblk_line *line = pblk_line_get_data(pblk);
 
 	c_ctx->nr_valid = nr_secs;
@@ -350,8 +370,12 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 
 		memset(pg_addr, 0, PBLK_EXPOSED_PAGE_SIZE);
 
-		for (i = 0; i < pblk->rail.stride_width - 1; i++) {
-			if (!test_bit(paddr - 32 * (pblk->rail.stride_width - 1 - i), line->rail_bitmap)
+		for (i = 0; i < nr_data; i++) {
+			int distance = (geo->all_luns / geo->rail_stride_width)
+				* pblk->min_write_pgs;
+
+			if (!test_bit(paddr - distance * (nr_data - i),
+				      line->rail_bitmap)
 			    && sec < pblk->rail.sec2rb[stride][i].nr_valid) {
 				unsigned int pos;
 				void *addr;
@@ -546,7 +570,7 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 	struct pblk_line *line;
 	unsigned int i, ppas = 0;
 
-	for (i = 1; i < pblk->rail.stride_width; i++) {
+	for (i = 1; i < geo->rail_stride_width; i++) {
 		unsigned int neighbor, lun, chnl;
 
 		neighbor = pblk_rail_wrap_lun(pblk, lun_pos + i * strides);
@@ -673,11 +697,18 @@ void pblk_rail_down_stripe(struct pblk *pblk, int lun, int access_type)
 
 void pblk_rail_notify_reader_down(struct pblk *pblk, int lun, int access_type)
 {
-	if (access_type & pblk->rail.enabled)
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+
+	if (geo->rail_stride_width && access_type & pblk->rail.enabled)
 		WARN_ON(test_and_set_bit(lun, pblk->rail.busy_bitmap));
 }
 
 void pblk_rail_notify_reader_up(struct pblk *pblk, int lun)
 {
-	clear_bit(lun, pblk->rail.busy_bitmap);
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+
+	if (geo->rail_stride_width)
+		clear_bit(lun, pblk->rail.busy_bitmap);
 }

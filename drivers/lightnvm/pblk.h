@@ -126,7 +126,6 @@ struct rail_stride {
 };
 
 struct pblk_rail {
-	unsigned int stride_width;      /* RAIL stride width including parity */
 	struct pblk_line *prev_rq_line; /* Line of in-flight parity write */
 	unsigned int prev_nr_secs;      /* Number of sectors of in-flight parity write */
 	struct sec2rb_entry **sec2rb;   /* Maps RAIL sectors to rb pos */

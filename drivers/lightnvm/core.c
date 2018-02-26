@@ -141,7 +141,7 @@ static void nvm_remove_tgt_dev(struct nvm_tgt_dev *tgt_dev, int clear)
 
 static struct nvm_tgt_dev *nvm_create_tgt_dev(struct nvm_dev *dev,
 					      u16 lun_begin, u16 lun_end,
-					      u16 op)
+					      u16 op, u16 rail_stride_width)
 {
 	struct nvm_tgt_dev *tgt_dev = NULL;
 	struct nvm_dev_map *dev_rmap = dev->rmap;
@@ -221,6 +221,7 @@ static struct nvm_tgt_dev *nvm_create_tgt_dev(struct nvm_dev *dev,
 	tgt_dev->geo.all_luns = nr_luns;
 	tgt_dev->geo.nr_luns = (lun_balanced) ? prev_nr_luns : -1;
 	tgt_dev->geo.op = op;
+	tgt_dev->geo.rail_stride_width = rail_stride_width;
 	tgt_dev->total_secs = nr_luns * tgt_dev->geo.sec_per_lun;
 	tgt_dev->q = dev->q;
 	tgt_dev->map = dev_map;
@@ -304,10 +305,9 @@ static int __nvm_config_extended(struct nvm_dev *dev,
 	}
 
 	/* op not set falls into target's default */
-	if (e->op == 0xFFFF)
+	if (e->op == 0xFFFF) {
 		e->op = NVM_TARGET_DEFAULT_OP;
-
-	if (e->op < NVM_TARGET_MIN_OP ||
+	} else if (e->op < NVM_TARGET_MIN_OP ||
 	    e->op > NVM_TARGET_MAX_OP) {
 		pr_err("nvm: invalid over provisioning value\n");
 		return -EINVAL;
@@ -336,6 +336,7 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 		e.lun_begin = create->conf.s.lun_begin;
 		e.lun_end = create->conf.s.lun_end;
 		e.op = NVM_TARGET_DEFAULT_OP;
+		e.rail_stride_width = 0;
 		break;
 	case NVM_CONFIG_TYPE_EXTENDED:
 		ret = __nvm_config_extended(dev, &create->conf.e);
@@ -371,7 +372,8 @@ static int nvm_create_tgt(struct nvm_dev *dev, struct nvm_ioctl_create *create)
 		goto err_reserve;
 	}
 
-	tgt_dev = nvm_create_tgt_dev(dev, e.lun_begin, e.lun_end, e.op);
+	tgt_dev = nvm_create_tgt_dev(dev, e.lun_begin, e.lun_end, e.op,
+				     e.rail_stride_width);
 	if (!tgt_dev) {
 		pr_err("nvm: could not create target device\n");
 		ret = -ENOMEM;
@@ -1129,12 +1131,6 @@ static long nvm_ioctl_dev_create(struct file *file, void __user *arg)
 
 	if (copy_from_user(&create, arg, sizeof(struct nvm_ioctl_create)))
 		return -EFAULT;
-
-	if (create.conf.type == NVM_CONFIG_TYPE_EXTENDED &&
-	    create.conf.e.rsv != 0) {
-		pr_err("nvm: reserved config field in use\n");
-		return -EINVAL;
-	}
 
 	create.dev[DISK_NAME_LEN - 1] = '\0';
 	create.tgttype[NVM_TTYPE_NAME_MAX - 1] = '\0';

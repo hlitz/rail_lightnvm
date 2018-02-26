@@ -304,6 +304,9 @@ struct nvm_geo {
 	int nr_planes;
 	int sec_per_pg; /* only sectors for a single page */
 	int sec_per_pl; /* all sectors across planes */
+
+	/* RAIL geometry */
+	int rail_stride_width;
 };
 
 /* sub-device structure */

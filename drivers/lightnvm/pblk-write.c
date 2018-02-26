@@ -442,7 +442,7 @@ static inline bool pblk_valid_meta_ppa(struct pblk *pblk,
 		return true;
 
 	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)) ||
-	    unlikely((data_line->meta_distance % pblk->rail.stride_width) == 0))
+	    unlikely((data_line->meta_distance % geo->rail_stride_width) == 0))
 		data_line->meta_distance--;
 
 	return false;

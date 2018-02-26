@@ -44,6 +44,8 @@ static int pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
 				 unsigned long *rail_bitmap,
 				 unsigned char *pvalid)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
 	struct bio *bio = rqd->bio;
 	struct ppa_addr ppas[PBLK_MAX_REQ_ADDRS];
@@ -87,7 +89,7 @@ retry:
 			atomic_long_inc(&pblk->cache_reads);
 #endif
 		} else if (pblk_rail_lun_busy(pblk, p) &&
-			   nr_rail_ppas + pblk->rail.stride_width - 1 <= 64 &&
+			   nr_rail_ppas + geo->rail_stride_width - 1 <= 64 &&
 			   pblk_rail_setup_ppas(pblk, p,
 						&rail_ppa_list[nr_rail_ppas],
 						&pvalid[rail_valid])) {
