@@ -591,6 +591,7 @@ static void pblk_set_provision(struct pblk *pblk, long nr_free_blks)
 		pblk->op = geo->op;
 
 	provisioned = nr_free_blks;
+	provisioned = provisioned * (geo->rail_stride_width - 1) / geo->rail_stride_width;
 	provisioned *= (100 - pblk->op);
 	sector_div(provisioned, 100);
 
