@@ -38,6 +38,12 @@ static ssize_t pblk_sysfs_rail_erase_en_show(struct pblk *pblk, char *page)
                        (pblk->rail.enabled & PBLK_RAIL_ERASE) != 0);
 }
 
+static ssize_t pblk_sysfs_rail_gc_only_en_show(struct pblk *pblk, char *page)
+{
+       return snprintf(page, PAGE_SIZE, "RAIL_enabled_for_erase=%i\n",
+                       (pblk->rail.enabled & PBLK_RAIL_GC_ONLY) != 0);
+}
+
 static ssize_t pblk_sysfs_set_rail_write_en(struct pblk *pblk,
                                             const char *page, size_t len)
 {
@@ -76,6 +82,27 @@ static ssize_t pblk_sysfs_set_rail_erase_en(struct pblk *pblk,
                pblk->rail.enabled |= PBLK_RAIL_ERASE;
        else
                pblk->rail.enabled &= ~PBLK_RAIL_ERASE;
+
+       return len;
+}
+
+static ssize_t pblk_sysfs_set_rail_gc_only_en(struct pblk *pblk,
+                                            const char *page, size_t len)
+{
+       size_t c_len;
+       bool rail_gc_only_en;
+
+       c_len = strcspn(page, "\n");
+       if (c_len >= len)
+               return -EINVAL;
+
+       if (kstrtobool(page, &rail_gc_only_en))
+               return -EINVAL;
+
+       if (rail_gc_only_en)
+               pblk->rail.enabled |= PBLK_RAIL_GC_ONLY;
+       else
+               pblk->rail.enabled &= ~PBLK_RAIL_GC_ONLY;
 
        return len;
 }
@@ -560,6 +587,11 @@ static struct attribute sys_rail_erase_en = {
        .mode = 0644,
 };
 
+static struct attribute sys_rail_gc_only_en = {
+       .name = "rail_gc_only_en",
+       .mode = 0644,
+};
+
 static struct attribute sys_write_luns = {
 	.name = "write_luns",
 	.mode = 0444,
@@ -649,6 +681,7 @@ static struct attribute *pblk_attrs[] = {
 	&sys_rail_stats_attr,
 	&sys_rail_write_en,
 	&sys_rail_erase_en,
+	&sys_rail_gc_only_en,
 #ifdef CONFIG_NVM_DEBUG
 	&sys_stats_debug_attr,
 #endif
@@ -690,6 +723,8 @@ static ssize_t pblk_sysfs_show(struct kobject *kobj, struct attribute *attr,
 		return pblk_sysfs_rail_write_en_show(pblk, buf);
 	else if (strcmp(attr->name, "rail_erase_en") == 0)
 		return pblk_sysfs_rail_erase_en_show(pblk, buf);
+	else if (strcmp(attr->name, "rail_gc_only_en") == 0)
+		return pblk_sysfs_rail_gc_only_en_show(pblk, buf);
 #ifdef CONFIG_NVM_DEBUG
 	else if (strcmp(attr->name, "stats") == 0)
 		return pblk_sysfs_stats_debug(pblk, buf);
@@ -714,6 +749,8 @@ static ssize_t pblk_sysfs_store(struct kobject *kobj, struct attribute *attr,
 		return pblk_sysfs_set_rail_write_en(pblk, buf, len);
 	else if (strcmp(attr->name, "rail_erase_en") == 0)
 		return pblk_sysfs_set_rail_erase_en(pblk, buf, len);
+	else if (strcmp(attr->name, "rail_gc_only_en") == 0)
+		return pblk_sysfs_set_rail_gc_only_en(pblk, buf, len);
 	return 0;
 }
 

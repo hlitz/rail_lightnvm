@@ -1777,7 +1777,7 @@ void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 }
 
 void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
-		  unsigned long *lun_bitmap)
+		  unsigned long *lun_bitmap, int access_type)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
@@ -1789,7 +1789,7 @@ void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 	if (test_and_set_bit(pos, lun_bitmap))
 		return;
 
-	__pblk_down_page(pblk, ppa_list, nr_ppas, pos, PBLK_RAIL_WRITE);
+	__pblk_down_page(pblk, ppa_list, nr_ppas, pos, access_type);
 }
 
 void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)

@@ -699,8 +699,12 @@ void pblk_rail_notify_reader_down(struct pblk *pblk, int lun, int access_type)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
+	bool gc_only = pblk->rail.enabled & PBLK_RAIL_GC_ONLY;
 
-	if (geo->rail_stride_width && access_type & pblk->rail.enabled)
+	if (gc_only && !(access_type & PBLK_RAIL_GC_ONLY))
+		return;
+
+	if (geo->rail_stride_width && (access_type & pblk->rail.enabled))
 		WARN_ON(test_and_set_bit(lun, pblk->rail.busy_bitmap));
 }
 

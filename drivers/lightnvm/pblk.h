@@ -62,9 +62,10 @@
 #define BYTE_SHIFT 3
 
 enum {
-	PBLK_RAIL_NONE = 0,
-	PBLK_RAIL_WRITE = 1 << 0,
-	PBLK_RAIL_ERASE = 1 << 1,
+	PBLK_RAIL_NONE    = 0,
+	PBLK_RAIL_WRITE   = 1 << 0,
+	PBLK_RAIL_ERASE   = 1 << 1,
+	PBLK_RAIL_GC_ONLY = 1 << 2,
 };
 
 enum {
@@ -839,7 +840,7 @@ int pblk_calc_secs(struct pblk *pblk, unsigned long secs_avail,
 		   unsigned long secs_to_flush);
 void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas);
 void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
-		  unsigned long *lun_bitmap);
+		  unsigned long *lun_bitmap, int access_type);
 void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 		    int access_type);
 void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,

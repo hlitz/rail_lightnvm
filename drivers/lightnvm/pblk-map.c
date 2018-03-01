@@ -28,10 +28,12 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 	struct pblk_line *line = pblk_line_get_data(pblk);
 	struct pblk_emeta *emeta;
 	struct pblk_w_ctx *w_ctx;
+	struct pblk_rb_entry *entry;
 	__le64 *lba_list;
 	u64 paddr;
 	int nr_secs = pblk->min_write_pgs;
 	int i;
+	int flags, access_type = 0;
 
 	if (pblk_line_is_full(line)) {
 		struct pblk_line *prev_line = line;
@@ -79,7 +81,13 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 		}
 	}
 
-	pblk_down_rq(pblk, ppa_list, nr_secs, lun_bitmap);
+	entry = &pblk->rwb.entries[sentry];
+	flags = READ_ONCE(entry->w_ctx.flags);
+	access_type |= PBLK_RAIL_WRITE;
+	if (flags & PBLK_IOTYPE_GC)
+		access_type |= PBLK_RAIL_GC_ONLY;
+
+	pblk_down_rq(pblk, ppa_list, nr_secs, lun_bitmap, access_type);
 }
 
 void pblk_map_rq(struct pblk *pblk, struct nvm_rq *rqd, unsigned int sentry,
