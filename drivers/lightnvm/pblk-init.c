@@ -591,7 +591,6 @@ static void pblk_set_provision(struct pblk *pblk, long nr_free_blks)
 		pblk->op = geo->op;
 
 	provisioned = nr_free_blks;
-	provisioned = provisioned * (geo->rail_stride_width - 1) / geo->rail_stride_width;
 	provisioned *= (100 - pblk->op);
 	sector_div(provisioned, 100);
 
@@ -608,6 +607,9 @@ static void pblk_set_provision(struct pblk *pblk, long nr_free_blks)
 	blk_meta = DIV_ROUND_UP(sec_meta, geo->sec_per_chk);
 
 	pblk->capacity = (provisioned - blk_meta) * geo->sec_per_chk;
+	if (geo->rail_stride_width)
+		pblk->capacity = pblk->capacity * (geo->rail_stride_width - 1) /
+			geo->rail_stride_width;
 
 	atomic_set(&pblk->rl.free_blocks, nr_free_blks);
 	atomic_set(&pblk->rl.free_user_blocks, nr_free_blks);

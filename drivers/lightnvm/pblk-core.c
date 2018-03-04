@@ -549,8 +549,10 @@ u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
 	for (i = 0; i < nr_secs; i++, line->cur_sec++) {
 		WARN_ON(test_and_set_bit(line->cur_sec, line->map_bitmap));
 
-		if ((i % pblk->min_write_pgs) == 0 && !parity_write && !meta_write)
-			pblk_rail_track_sec(pblk, line, line->cur_sec, nr_valid, sentry + i);
+		if (pblk->rail.enabled && (i % pblk->min_write_pgs) == 0 &&
+		    !parity_write && !meta_write)
+			pblk_rail_track_sec(pblk, line, line->cur_sec, nr_valid,
+					    sentry + i);
 	}
 
 	return addr;
@@ -1112,20 +1114,24 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	line->left_msecs = line->sec_in_line;
 	*line->vsc = cpu_to_le32(line->sec_in_line);
 
-	bitmap_copy(line->rail_bitmap, line->invalid_bitmap, lm->sec_per_line);
+	if (geo->rail_stride_width) {
+		bitmap_copy(line->rail_bitmap, line->invalid_bitmap,
+			    lm->sec_per_line);
 
-       /* Mark RAIL parity sectors as bad sectors, so they can be gc'ed */
-       for (off = pblk_rail_dsec_per_stripe(pblk);
-            off < pblk->lm.sec_per_line;
-            off += pblk_rail_sec_per_stripe(pblk)) {
-               for (bit = 0; bit < pblk_rail_psec_per_stripe(pblk); bit++) {
-                       int set;
+		/* Mark RAIL parity sectors as bad sectors for gc */
+		for (off = pblk_rail_dsec_per_stripe(pblk);
+		     off < pblk->lm.sec_per_line;
+		     off += pblk_rail_sec_per_stripe(pblk)) {
+			for (bit = 0; bit < pblk_rail_psec_per_stripe(pblk);
+			     bit++) {
+				int set;
 
-                       set = !test_bit(off + bit, line->invalid_bitmap);
-                       //set = !test_and_set_bit(off + bit, line->invalid_bitmap);
-                       line->rail_parity_secs += set;
-               }
-       }
+				set = !test_bit(off + bit,
+						line->invalid_bitmap);
+				line->rail_parity_secs += set;
+			}
+		}
+	}
 
        if (lm->sec_per_line - line->sec_in_line !=
 		bitmap_weight(line->invalid_bitmap, lm->sec_per_line)) {
@@ -1661,6 +1667,8 @@ void pblk_line_close(struct pblk *pblk, struct pblk_line *line)
 
 	WARN(!bitmap_full(line->map_bitmap, lm->sec_per_line),
 				"pblk: corrupt closed line %d\n", line->id);
+	WARN(line->rail_parity_secs,
+	     "pblk RAIL: corrupt closed line %d\n", line->rail_parity_secs);
 #endif
 
 	spin_lock(&l_mg->free_lock);

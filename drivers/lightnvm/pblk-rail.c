@@ -114,13 +114,16 @@ int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	int lun_pos = pblk_ppa_to_pos(geo, ppa);
-	int ret = test_bit(lun_pos, pblk->rail.busy_bitmap);
+	int ret = 0;
 
-	if (ret > 0)
-		pblk->rail.rail_reads++;
-	
-	pblk->rail.reads++;
-	
+	if (geo->rail_stride_width) {
+		ret = test_bit(lun_pos, pblk->rail.busy_bitmap);
+		if (ret > 0)
+			pblk->rail.rail_reads++;
+
+		pblk->rail.reads++;
+	}
+
 	return ret;
 }
 
@@ -228,7 +231,7 @@ int pblk_rail_init(struct pblk *pblk)
 	unsigned int nr_strides;
 	unsigned int psecs;
 	void *kaddr;
-	printk(KERN_EMERG "stride widhth %i\n", geo->rail_stride_width);
+
 	if (geo->rail_stride_width == 0) {
 		pblk->rail.enabled = 0;
 		return 0;
@@ -288,8 +291,12 @@ void pblk_rail_tear_down(struct pblk *pblk)
 	struct nvm_geo *geo = &dev->geo;
 	unsigned int i;
 	unsigned int nr_strides;
-	unsigned int psecs = pblk_rail_psec_per_stripe(pblk);
+	unsigned int psecs;
 
+	if (geo->rail_stride_width == 0)
+		return;
+
+	psecs = pblk_rail_psec_per_stripe(pblk);
 	nr_strides = pblk_rail_dsec_per_stripe(pblk) /
 		(geo->rail_stride_width - 1);
 

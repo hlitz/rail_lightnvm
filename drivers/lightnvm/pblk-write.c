@@ -78,16 +78,16 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 	unsigned long flags;
 	unsigned long pos;
 
-#ifdef CONFIG_NVM_DEBUG
-	atomic_long_sub(c_ctx->nr_valid, &pblk->inflight_writes);
-#endif
-
 	pblk_up_rq(pblk, rqd->ppa_list, rqd->nr_ppas, c_ctx->lun_bitmap);
 
 	if (c_ctx->is_rail) {
 		pblk_rail_end_parity_write(pblk, rqd, c_ctx);
 		return;
 	}
+
+#ifdef CONFIG_NVM_DEBUG
+	atomic_long_sub(c_ctx->nr_valid, &pblk->inflight_writes);
+#endif
 
 	pos = pblk_rb_sync_init(&pblk->rwb, &flags);
 	if (pos == c_ctx->sentry) {
@@ -441,8 +441,8 @@ static inline bool pblk_valid_meta_ppa(struct pblk *pblk,
 				test_bit(pos_opt, data_line->blk_bitmap))
 		return true;
 
-	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)) ||
-	    unlikely((data_line->meta_distance % geo->rail_stride_width) == 0))
+	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)) || (geo->rail_stride_width &&
+	    unlikely((data_line->meta_distance % geo->rail_stride_width) == 0)))
 		data_line->meta_distance--;
 
 	return false;
