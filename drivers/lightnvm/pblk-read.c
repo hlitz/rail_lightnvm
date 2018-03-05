@@ -404,7 +404,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	unsigned long rail_bitmap;
 	struct ppa_addr rail_ppa_list[PBLK_MAX_REQ_ADDRS];
 	int nr_rail_ppas;
-
+	bool partial = false;
 	/* logic error: lba out-of-bounds. Ignore read request */
 	if (blba >= pblk->rl.nr_secs || nr_secs > PBLK_MAX_REQ_ADDRS) {
 		WARN(1, "pblk: read lba out of bounds (lba:%llu, nr:%d)\n",
@@ -505,7 +505,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 			pr_err("pblk: failed to perform partial read\n");
 			return ret;
 		}
-		
+		partial = true;
 		/* Complete the original bio and associated request if there are no RAIL reads*/
 		if (bitmap_empty(&rail_bitmap, rqd->nr_ppas)) {
 			bio_endio(bio);
@@ -518,6 +518,8 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	/* The read bio requires RAIL reads to be fullfilled.
 	 */
 	if (!bitmap_empty(&rail_bitmap, rqd->nr_ppas)) {
+	  if(partial)
+	    printk(KERN_EMERG "partial + RAIL!\n");
 		//Javier is it a problem to initialize below if we have only one ppa? If not we should do it in all cases above
 		if (nr_secs == 1 /*&& nr_rail_ppas > 1*/) {
 			rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;

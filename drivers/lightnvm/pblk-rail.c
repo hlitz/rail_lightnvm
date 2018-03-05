@@ -317,6 +317,17 @@ void pblk_rail_compute_parity(void *dest, void *src)
 	for (i = 0; i < PBLK_EXPOSED_PAGE_SIZE / sizeof(unsigned long); i++)
 		((unsigned long *)dest)[i] ^= ((unsigned long *)src)[i];
 }
+bool cmp(void *dest, void *src)
+{
+	unsigned int i;
+	bool ret =true;
+	for (i = 0; i < PBLK_EXPOSED_PAGE_SIZE / sizeof(unsigned long); i++)
+	  if(((unsigned long *)dest)[i] != ((unsigned long *)src)[i]){
+	    ret = false;
+	    printk(KERN_EMERG "mismatch: %lx %lx\n", ((unsigned long *)dest)[i] , ((unsigned long *)src)[i]);
+	  }
+	return ret;
+}
 
 void pblk_rail_stride_put(struct kref *ref)
 {
@@ -525,11 +536,16 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 
 		memset(dst_p + dst_bv.bv_offset, 0, PBLK_EXPOSED_PAGE_SIZE);
 		WARN_ON(dst_bv.bv_offset);
+
 		for (r = 0; r < r_ctx->pvalid[i]; r++) {
 			src_bv = rail_bio->bi_io_vec[n_idx++];
 			src_p = kmap_atomic(src_bv.bv_page);
-
-			pblk_rail_compute_parity(dst_p + dst_bv.bv_offset,
+			if(r+1 == r_ctx->pvalid[i]){
+			  if(!cmp(src_p, dst_p + dst_bv.bv_offset))
+			    printk(KERN_EMERG "failed read len %\n", r_ctx->pvalid[i]);
+			}
+			else
+			  pblk_rail_compute_parity(dst_p + dst_bv.bv_offset,
 						 src_p + src_bv.bv_offset);
 			WARN_ON(src_bv.bv_offset);
 			kunmap_atomic(src_p);
@@ -576,7 +592,7 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 	unsigned int strides = pblk_rail_nr_parity_luns(pblk);
 	struct pblk_line *line;
 	unsigned int i, ppas = 0;
-
+	struct ppa_addr orig_ppa = ppa;
 	for (i = 1; i < geo->rail_stride_width; i++) {
 		unsigned int neighbor, lun, chnl;
 
@@ -608,7 +624,11 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 		rail_ppas[ppas++] = ppa;
 		(*pvalid)++; /* Valid (non-bb/meta) reads in stride */
 	}
-
+	if(*pvalid > 1) {
+	  (*pvalid)++;
+	  rail_ppas[ppas++] = orig_ppa;
+	}
+	  
 	/* Dont do rail if pvalid == 1, fix RAIL to support nr_ppas == 1 */
 	return *pvalid > 0;
 }
