@@ -518,6 +518,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	/* The read bio requires RAIL reads to be fullfilled.
 	 */
 	if (!bitmap_empty(&rail_bitmap, rqd->nr_ppas)) {
+	        bio_get(bio);
 		//Javier is it a problem to initialize below if we have only one ppa? If not we should do it in all cases above
 		if (nr_secs == 1 /*&& nr_rail_ppas > 1*/) {
 			rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;

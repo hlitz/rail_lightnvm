@@ -135,6 +135,8 @@ struct pblk_rail {
 	unsigned long rail_reads;
 	unsigned long *busy_bitmap;     /* LUNs currently serving a write/erase */
 	int enabled;                    /* Enable RAIL for access types */
+        atomic_long_t read_err;
+        atomic_long_t write_err;
 	void **data;                    /* Data pointer to pages */
 };
 

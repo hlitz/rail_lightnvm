@@ -22,8 +22,10 @@
 
 static ssize_t pblk_sysfs_rail_stats_show(struct pblk *pblk, char *page)
 {
-       return snprintf(page, PAGE_SIZE, "reads=%lu, rail_reads=%lu\n",
-                       pblk->rail.reads, pblk->rail.rail_reads);
+       return snprintf(page, PAGE_SIZE, "reads=%lu, rail_reads=%lu, rail_read_err=%lu, rail_write_err=%lu \n",
+                       pblk->rail.reads, pblk->rail.rail_reads,
+		       atomic_long_read(&pblk->rail.read_err),
+		       atomic_long_read(&pblk->rail.write_err));
 }
 
 static ssize_t pblk_sysfs_rail_write_en_show(struct pblk *pblk, char *page)

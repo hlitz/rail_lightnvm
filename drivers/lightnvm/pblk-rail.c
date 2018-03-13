@@ -279,6 +279,8 @@ int pblk_rail_init(struct pblk *pblk)
 	if (!pblk->rail.busy_bitmap)
 		return -ENOMEM;
 
+	atomic_long_set(&pblk->rail.read_err, 0);
+	atomic_long_set(&pblk->rail.write_err, 0);
 	printk(KERN_EMERG "Initialized RAIL with stride width %d\n",
 	       geo->rail_stride_width);
 
@@ -483,12 +485,9 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	int ttt=0;
 	int orig_ppa = 0;
 
-	if (rqd->error) {
-	  int e;
-		for (e=0; e<rqd->nr_ppas; e++)
-		  print_ppa(&rqd->ppa_list[e], "rail read error", rqd->error);
-		return __pblk_end_io_read(pblk, rqd, false);
-	}
+	if (rqd->error)
+		atomic_long_inc(&pblk->rail.read_err);
+
 	if (unlikely(rqd->nr_ppas == 1)) {
 		struct ppa_addr ppa;
 
@@ -550,12 +549,13 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	} while (i < r_ctx->nr_orig_secs_as_rail);
 
 	bio_put(rail_bio);
-
+	
 	r_ctx->private = NULL;
 	bio_endio(orig_bio);
 	rqd->bio = orig_bio;
 	rqd->nr_ppas = r_ctx->nr_orig_secs;
-
+	bio_put(orig_bio);
+	
 	return __pblk_end_io_read(pblk, rqd, false);
 }
 
@@ -617,7 +617,7 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 		       unsigned int bio_init_idx, unsigned long *read_bitmap,
 		       struct ppa_addr *rail_ppa_list, unsigned char *pvalid)
 {
-	struct bio *new_bio, *bio = rqd->bio;
+	struct bio *new_bio, *orig_bio = rqd->bio;
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
 	int nr_orig_secs_as_rail = bitmap_weight(read_bitmap, PBLK_MAX_REQ_ADDRS);
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
@@ -667,11 +667,12 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	}
 
 	WARN_ON(rqd->nr_ppas < 1 || rqd->nr_ppas > 64);
+
 	ret = pblk_submit_read_io(pblk, rqd);
 	if (ret) {
 		//for (i = 0; i<nr_holes; i++)
 		//	print_ppa(&rqd->ppa_list[i], "rail read fail", 44);
-
+	  bio_put(orig_bio);
 		bio_put(rqd->bio);
 		pr_err("pblk: RAIL read IO submission failed\n");
 		goto err_pages;
@@ -680,7 +681,7 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	return NVM_IO_OK;
 	
 err_pages:
-	pblk_bio_free_pages(pblk, bio, 0, new_bio->bi_vcnt);
+	pblk_bio_free_pages(pblk, orig_bio, 0, new_bio->bi_vcnt);
 err:
 	bio_put(new_bio);
 
