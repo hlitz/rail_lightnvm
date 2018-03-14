@@ -69,8 +69,14 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 				meta_list[i].lba = cpu_to_le64(w_ctx->lba);
 				lba_list[paddr] = cpu_to_le64(w_ctx->lba);
 			}
-			else
+			else {
+				u64 *lba;
+			        lba = pblk_rail_lba(&pblk->rail, sentry + i);
+				meta_list[i].lba = cpu_to_le64(*lba);
+				lba_list[paddr] = cpu_to_le64(*lba);
 				line->rail_parity_secs--;
+			}
+
 			if (lba_list[paddr] != addr_empty)
 				line->nr_valid_lbas++;
 			else
@@ -81,12 +87,13 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 		}
 	}
 
-	entry = &pblk->rwb.entries[sentry];
-	flags = READ_ONCE(entry->w_ctx.flags);
 	access_type |= PBLK_RAIL_WRITE;
-	if (flags & PBLK_IOTYPE_GC)
-		access_type |= PBLK_RAIL_GC_ONLY;
-
+	if (!rail_parity) {
+		entry = &pblk->rwb.entries[sentry];
+		flags = READ_ONCE(entry->w_ctx.flags);
+		if (flags & PBLK_IOTYPE_GC)
+			access_type |= PBLK_RAIL_GC_ONLY;
+	}
 	pblk_down_rq(pblk, ppa_list, nr_secs, lun_bitmap, access_type);
 }
 

@@ -191,7 +191,7 @@ void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 		WARN_ONCE(bio->bi_status, "pblk: corrupted read error\n");
 #endif
 
-	//pblk_read_check(pblk, rqd, r_ctx->lba);
+	pblk_read_check(pblk, rqd, r_ctx->lba);
 
 	bio_put(bio);
 	if (r_ctx->private)

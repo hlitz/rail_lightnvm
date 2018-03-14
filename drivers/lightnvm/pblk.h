@@ -135,7 +135,8 @@ struct pblk_rail {
 	unsigned long rail_reads;
 	unsigned long *busy_bitmap;     /* LUNs currently serving a write/erase */
 	int enabled;                    /* Enable RAIL for access types */
-	void **data;                    /* Data pointer to pages */
+	u64 *lba;                       /* parity LBA buffer */
+	void **data;                    /* parity pages buffer */
 };
 
 /* write buffer completion context */
@@ -1412,6 +1413,7 @@ unsigned int pblk_rail_dsec_per_stripe(struct pblk *pblk);
 unsigned int pblk_rail_psec_per_stripe(struct pblk *pblk);
 int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa);
 int pblk_rail_luns_busy(struct pblk *pblk, int lun_id);
+u64 * pblk_rail_lba(struct pblk_rail *rail, int sentry);
 int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 			 struct ppa_addr *rail_ppas, unsigned char *pvalid);
 int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,

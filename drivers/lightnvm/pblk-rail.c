@@ -167,6 +167,11 @@ int pblk_rail_luns_busy(struct pblk *pblk, int lun_id)
 	return 0;
 } 
 
+u64 * pblk_rail_lba(struct pblk_rail *rail, int sentry)
+{
+	return &rail->lba[sentry]; 
+}
+
 unsigned int pblk_rail_sec_to_stride(struct pblk *pblk, unsigned int sec)
 {
 	return (sec % pblk_rail_psec_per_stripe(pblk)) / pblk->min_write_pgs ;
@@ -270,6 +275,8 @@ int pblk_rail_init(struct pblk *pblk)
 	for (i = 0; i < psecs; i++)
 		pblk->rail.data[i] = kaddr + i * PBLK_EXPOSED_PAGE_SIZE;
 
+	pblk->rail.lba = kmalloc(psecs * sizeof(u64 *), GFP_KERNEL);
+	
 	pblk->rail.prev_rq_line = NULL;
 	pblk->rail.prev_nr_secs = 0;
 	pblk->rail.enabled = (PBLK_RAIL_WRITE | PBLK_RAIL_ERASE);
@@ -309,13 +316,17 @@ void pblk_rail_tear_down(struct pblk *pblk)
 		   get_count_order(psecs));
 }
 
-
 void pblk_rail_compute_parity(void *dest, void *src)
 {
 	unsigned int i;
 
 	for (i = 0; i < PBLK_EXPOSED_PAGE_SIZE / sizeof(unsigned long); i++)
 		((unsigned long *)dest)[i] ^= ((unsigned long *)src)[i];
+}
+
+void pblk_rail_lba_parity(u64 *dest, u64 *src)
+{
+	*dest ^= *src;
 }
 
 void pblk_rail_stride_put(struct kref *ref)
@@ -356,16 +367,21 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 
 	c_ctx->nr_valid = nr_secs;
 	c_ctx->is_rail = true;
+	/* sentry indexes rail page buffer, instead of rwb */
+	c_ctx->sentry = stride * pblk->min_write_pgs;
 
 	for (sec = 0; sec < pblk->min_write_pgs; sec++) {
 		void *pg_addr;
 		struct page *page;
+		u64 *lba;
 
+		lba = pblk_rail_lba(&pblk->rail, stride * pblk->min_write_pgs + sec); 
 		pg_addr = pblk->rail.data[stride * pblk->min_write_pgs + sec];
 		page = virt_to_page(pg_addr);
 
 		if (!page) {
-			pr_err("pblk: could not allocate RAIL bio page %p\n", pg_addr);
+			pr_err("pblk: could not allocate RAIL bio page %p\n",
+			       pg_addr);
 			return -NVM_IO_ERR;
 		}
 
@@ -375,22 +391,26 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 			return -NVM_IO_ERR;
 		}
 
+		*lba = 0;
 		memset(pg_addr, 0, PBLK_EXPOSED_PAGE_SIZE);
 
 		for (i = 0; i < nr_data; i++) {
 			int distance = (geo->all_luns / geo->rail_stride_width)
-				* pblk->min_write_pgs;
+			  * pblk->min_write_pgs;
 
 			if (!test_bit(paddr - distance * (nr_data - i),
-				      line->rail_bitmap)
-			    && sec < pblk->rail.sec2rb[stride][i].nr_valid) {
+				      line->rail_bitmap) &&
+			    sec < pblk->rail.sec2rb[stride][i].nr_valid) {
 				unsigned int pos;
 				void *addr;
+				struct pblk_w_ctx *w_ctx;
 
 				pos = pblk->rail.sec2rb[stride][i].pos;
 				pos = pblk_rb_wrap_pos(&pblk->rwb, pos + sec);
 				addr = pblk->rwb.entries[pos].data;
 				pblk_rail_compute_parity(pg_addr, addr);
+				w_ctx = pblk_rb_w_ctx(&pblk->rwb, pos + sec);
+				pblk_rail_lba_parity(lba, &w_ctx->lba);
 			}
 		}
 	}

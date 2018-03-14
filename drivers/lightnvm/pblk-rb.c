@@ -154,20 +154,7 @@ try:
 }
 
 #define pblk_rb_ring_count(head, tail, size) CIRC_CNT(head, tail, size)
-//#define pblk_rb_ring_space(rb, head, tail, size)			\
-//					(CIRC_SPACE(head, tail, size))
-static unsigned int pblk_rb_ring_space(struct pblk_rb *rb, unsigned int head, unsigned int tail, unsigned int size)
-{
-	struct pblk *pblk = container_of(rb, struct pblk, rwb);
-	struct nvm_tgt_dev *dev = pblk->dev;
-	struct nvm_geo *geo = &dev->geo;
-	int rail_delay = geo->all_luns * pblk->min_write_pgs;
-
-	if ((CIRC_SPACE(head, tail, size)) < rail_delay)
-		return 0;
-	
-	return (CIRC_SPACE(head, tail, size)) - rail_delay; 
-}
+#define pblk_rb_ring_space(rb, head, tail, size) (CIRC_SPACE(head, tail, size))
 
 /*
  * Buffer space is calculated with respect to the back pointer signaling
