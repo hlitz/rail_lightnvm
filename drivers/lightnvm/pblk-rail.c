@@ -409,7 +409,7 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 				pos = pblk_rb_wrap_pos(&pblk->rwb, pos + sec);
 				addr = pblk->rwb.entries[pos].data;
 				pblk_rail_compute_parity(pg_addr, addr);
-				w_ctx = pblk_rb_w_ctx(&pblk->rwb, pos + sec);
+				w_ctx = pblk_rb_w_ctx(&pblk->rwb, pos);
 				pblk_rail_lba_parity(lba, &w_ctx->lba);
 			}
 		}
@@ -500,13 +500,9 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	__le64 *lba_list_mem, *lba_list_media;
 	void *src_p, *dst_p;
 	int i, hole, n_idx = 0;
-	int ttt=0;
 	int orig_ppa = 0;
 
 	if (rqd->error) {
-	  int e;
-		for (e=0; e<rqd->nr_ppas; e++)
-		  print_ppa(&rqd->ppa_list[e], "rail read error", rqd->error);
 		return __pblk_end_io_read(pblk, rqd, false);
 	}
 	if (unlikely(rqd->nr_ppas == 1)) {
@@ -521,11 +517,10 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	/* Re-use allocated memory for intermediate lbas */
 	lba_list_mem = (((void *)rqd->ppa_list) + pblk_dma_ppa_size);
 	lba_list_media = (((void *)rqd->ppa_list) + 2 * pblk_dma_ppa_size);
-	for (i = 0; i < r_ctx->nr_orig_secs; i++) {
+	for (i = 0; i < rqd->nr_ppas; i++)
 		lba_list_media[i] = meta_list[i].lba;
+	for (i = 0; i < r_ctx->nr_orig_secs; i++)
 		meta_list[i].lba = lba_list_mem[i];
-		//printk(KERN_EMERG "done meta list %lx lbal list mem %lx\n", lba_list_media[i], meta_list[i].lba);
-	}
 
 	i = 0;
 	hole = find_first_bit(&r_ctx->bitmap, PBLK_MAX_REQ_ADDRS);
@@ -536,8 +531,7 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 
 		kref_put(&line->ref, pblk_line_put_wq);
 
-		meta_list[hole].lba = lba_list_media[i];
-		//printk(KERN_EMERG "meta list hole %lx\n", meta_list[hole].lba);
+		meta_list[hole].lba = 0;
 		orig_ppa += r_ctx->pvalid[i];
 
 		dst_bv = orig_bio->bi_io_vec[r_ctx->bio_init_idx + hole];
@@ -546,20 +540,15 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 		memset(dst_p + dst_bv.bv_offset, 0, PBLK_EXPOSED_PAGE_SIZE);
 		WARN_ON(dst_bv.bv_offset);
 		for (r = 0; r < r_ctx->pvalid[i]; r++) {
-			src_bv = rail_bio->bi_io_vec[n_idx++];
+			src_bv = rail_bio->bi_io_vec[n_idx];
 			src_p = kmap_atomic(src_bv.bv_page);
 
 			pblk_rail_compute_parity(dst_p + dst_bv.bv_offset,
 						 src_p + src_bv.bv_offset);
-			WARN_ON(src_bv.bv_offset);
+			pblk_rail_lba_parity(&meta_list[hole].lba, &lba_list_media[n_idx]);
 			kunmap_atomic(src_p);
 			mempool_free(src_bv.bv_page, pblk->page_bio_pool);
-			ttt++;
-/*			if(blub >= 680){
-				printk(KERN_EMERG "src %lu dst %lu\n", ((unsigned long *)src_p)[0], ((unsigned long *)dst_p)[0]);
-				printk(KERN_EMERG "src %lu dst %lu\n", ((unsigned long *)src_p)[1], ((unsigned long *)dst_p)[2]);
-				printk(KERN_EMERG "src %lu dst %lu\n", ((unsigned long *)src_p)[2], ((unsigned long *)dst_p)[2]);
-				}*/
+			n_idx++;
 		}
 
 		kunmap_atomic(dst_p);
@@ -575,7 +564,6 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	bio_endio(orig_bio);
 	rqd->bio = orig_bio;
 	rqd->nr_ppas = r_ctx->nr_orig_secs;
-
 	return __pblk_end_io_read(pblk, rqd, false);
 }
 
@@ -595,7 +583,8 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 	unsigned int lun_pos = pblk_ppa_to_pos(geo, ppa);
 	unsigned int strides = pblk_rail_nr_parity_luns(pblk);
 	struct pblk_line *line;
-	unsigned int i, ppas = 0;
+	unsigned int i;
+	int ppas = 0;
 
 	for (i = 1; i < geo->rail_stride_width; i++) {
 		unsigned int neighbor, lun, chnl;
@@ -613,8 +602,10 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 		if (test_bit(pblk_dev_ppa_to_line_addr(pblk, ppa), 
 			     line->rail_bitmap)) {
 			/* We cannot recompute the original sec if parity is bad */
-			if (neighbor >= pblk_rail_nr_data_luns(pblk))
+			if (neighbor >= pblk_rail_nr_data_luns(pblk)){
+				*pvalid = 0; 
 				return 0;
+			}
 
 			/* If any other neighbor is bad we can just skip it */
 			continue;
@@ -629,7 +620,7 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 		(*pvalid)++; /* Valid (non-bb/meta) reads in stride */
 	}
 
-	/* Dont do rail if pvalid == 1, fix RAIL to support nr_ppas == 1 */
+	/* Dont do RAIL-read if all neighbors are bad */
 	return *pvalid > 0;
 }
 
@@ -642,12 +633,13 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	int nr_orig_secs_as_rail = bitmap_weight(read_bitmap, PBLK_MAX_REQ_ADDRS);
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	unsigned char nr_holes = 0;
-	__le64 *lba_list_mem, *lba_list_media;
+	__le64 *lba_list_mem;
 	int i, ret;
 
 	/* Re-use allocated memory for intermediate lbas */
 	lba_list_mem = (((void *)rqd->ppa_list) + pblk_dma_ppa_size);
-	lba_list_media = (((void *)rqd->ppa_list) + 2 * pblk_dma_ppa_size);
+	for (i = 0; i < r_ctx->nr_orig_secs; i++)
+		lba_list_mem[i] = meta_list[i].lba;
 
 	for (i = 0; i < nr_orig_secs_as_rail; i++)
 		nr_holes += pvalid[i];
@@ -662,11 +654,6 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 		goto err_pages;
 	}
 
-	for (i = 0; i < r_ctx->nr_orig_secs; i++) {
-		lba_list_mem[i] = meta_list[i].lba;
-		//printk(KERN_EMERG "vvefore send lballist %lx\n", lba_list_mem[i]);
-	}
-
 	new_bio->bi_iter.bi_sector = 0; /* internal bio */
 	bio_set_op_attrs(new_bio, REQ_OP_READ, 0);
 
@@ -677,7 +664,6 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	rqd->private = pblk;
 
 	memcpy(rqd->ppa_list, rail_ppa_list, sizeof(struct ppa_addr) * nr_holes);
-
 	r_ctx->ppa_ptr = NULL;
 
 	if (unlikely(nr_holes == 1)) {
@@ -689,9 +675,6 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	WARN_ON(rqd->nr_ppas < 1 || rqd->nr_ppas > 64);
 	ret = pblk_submit_read_io(pblk, rqd);
 	if (ret) {
-		//for (i = 0; i<nr_holes; i++)
-		//	print_ppa(&rqd->ppa_list[i], "rail read fail", 44);
-
 		bio_put(rqd->bio);
 		pr_err("pblk: RAIL read IO submission failed\n");
 		goto err_pages;
