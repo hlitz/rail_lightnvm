@@ -546,16 +546,16 @@ u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
 
 	line->cur_sec = addr = find_next_zero_bit(line->map_bitmap,
 					pblk->lm.sec_per_line, line->cur_sec);
-	for (i = 0; i < nr_secs; i += pblk->min_write_pgs, line->cur_sec++) {
+	for (i = 0; i < nr_secs; i += pblk->min_write_pgs) {
 		int e;
-		
-		for (e = 0; e < pblk->min_write_pgs; e++, line->cur_sec++)
-			WARN_ON(test_and_set_bit(line->cur_sec,
-						 line->map_bitmap));
 
 		if (pblk->rail.enabled && !parity_write && !meta_write)
 			pblk_rail_track_sec(pblk, line, line->cur_sec, nr_valid,
 					    sentry + i);
+
+		for (e = 0; e < pblk->min_write_pgs; e++, line->cur_sec++)
+			WARN_ON(test_and_set_bit(line->cur_sec,
+						 line->map_bitmap));
 	}
 
 	return addr;
