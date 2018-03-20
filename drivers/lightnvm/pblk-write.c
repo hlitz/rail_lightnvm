@@ -377,8 +377,12 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 		paddr = __pblk_alloc_page(pblk, meta_line, rq_ppas, rq_ppas,
 					  0, false, true);
 		spin_unlock(&meta_line->lock);
-		for (j = 0; j < rq_ppas; j++, i++, paddr++)
+		for (j = 0; j < rq_ppas; j++, i++, paddr++) {
 			rqd->ppa_list[i] = addr_to_gen_ppa(pblk, paddr, id);
+			if(test_and_set_bit(paddr, meta_line->rail_bitmap)==0)
+			  printk(KERN_EMERG "hmm write mata not yet set in reail bitmap %lx\n", paddr);
+
+		}
 	}
 
 	emeta->mem += rq_len;

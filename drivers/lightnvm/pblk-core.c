@@ -669,6 +669,8 @@ next_rq:
 				meta_list[i].lba = cpu_to_le64(ADDR_EMPTY);
 				rqd.ppa_list[i] =
 					addr_to_gen_ppa(pblk, paddr, id);
+				if(test_and_set_bit(paddr, line->rail_bitmap)==0)
+				  printk(KERN_EMERG "hmm emata not yet set in reail bitmap %lx\n", paddr);
 			}
 		}
 		pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas, PBLK_RAIL_WRITE);
@@ -812,6 +814,9 @@ static int pblk_line_submit_smeta_io(struct pblk *pblk, struct pblk_line *line,
 			__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
 
 			meta_list[i].lba = lba_list[paddr] = addr_empty;
+			set_bit(paddr, line->rail_bitmap);
+			  
+
 		}
 	}
 

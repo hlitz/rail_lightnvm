@@ -16,6 +16,28 @@
 #include "pblk.h"
 #include <linux/log2.h>
 
+static int pblk_read_check(struct pblk *pblk, struct nvm_rq *rqd,
+			   sector_t blba)
+{
+	struct pblk_sec_meta *meta_list = rqd->meta_list;
+	int nr_lbas = rqd->nr_ppas;
+	int i;
+	bool bug = false;
+	for (i = 0; i < nr_lbas; i++) {
+		u64 lba = le64_to_cpu(meta_list[i].lba);
+
+		if (lba == ADDR_EMPTY)
+			continue;
+
+		//WARN(lba != blba + i, "pblk: corrupted read LBA %lx %lx\n", (unsigned long)lba, (unsigned long)blba);
+		if(lba != blba + i) {
+		  bug = true;
+		  printk(KERN_EMERG "pblk: corrupted read LBA %lx %lx\n", (unsigned long)lba, (unsigned long)blba);
+		}
+	}
+	return bug;
+}
+
 unsigned int pblk_rail_enabled(struct pblk *pblk)
 {
   	struct nvm_tgt_dev *dev = pblk->dev;
@@ -501,10 +523,8 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	void *src_p, *dst_p;
 	int i, hole, n_idx = 0;
 	int orig_ppa = 0;
-
-	if (rqd->error) {
-		return __pblk_end_io_read(pblk, rqd, false);
-	}
+	__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
+int rail_ppas=0;
 	if (unlikely(rqd->nr_ppas == 1)) {
 		struct ppa_addr ppa;
 
@@ -545,7 +565,8 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 
 			pblk_rail_compute_parity(dst_p + dst_bv.bv_offset,
 						 src_p + src_bv.bv_offset);
-			pblk_rail_lba_parity(&meta_list[hole].lba, &lba_list_media[n_idx]);
+			if(lba_list_media[n_idx] != addr_empty)
+				pblk_rail_lba_parity(&meta_list[hole].lba, &lba_list_media[n_idx]);
 			kunmap_atomic(src_p);
 			mempool_free(src_bv.bv_page, pblk->page_bio_pool);
 			n_idx++;
@@ -559,11 +580,36 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	} while (i < r_ctx->nr_orig_secs_as_rail);
 
 	bio_put(rail_bio);
-
+	rail_ppas=rqd->nr_ppas;
 	r_ctx->private = NULL;
 	bio_endio(orig_bio);
 	rqd->bio = orig_bio;
 	rqd->nr_ppas = r_ctx->nr_orig_secs;
+
+	if(pblk_read_check(pblk, rqd,
+			   r_ctx->lba)){
+	  int i, hole;
+	  printk(KERN_EMERG "bitmap %lx\n", (unsigned long)r_ctx->bitmap);
+	  for(i=0;i<rail_ppas;i++){
+	    printk(KERN_EMERG "lba media %llx\n", lba_list_media[i]);
+	  }
+	  for(i=0;i<rqd->nr_ppas;i++){
+	    printk(KERN_EMERG "lba after %llx\n", meta_list[i].lba);
+	  }
+	  for(i=0;i<rail_ppas;i++)
+	    printk(KERN_EMERG "ppa %llx\n", rqd->ppa_list[i].ppa);
+	  i=0;
+	  hole = find_first_bit(&r_ctx->bitmap, PBLK_MAX_REQ_ADDRS);
+	  do {
+		hole = find_next_bit(&r_ctx->bitmap, PBLK_MAX_REQ_ADDRS,
+					  hole + 1);
+		printk(KERN_EMERG "hole %i i %i orig %i\n", hole, i, r_ctx->nr_orig_secs_as_rail);
+		i++;
+	  } while (i < r_ctx->nr_orig_secs_as_rail);
+
+	}
+	  
+
 	return __pblk_end_io_read(pblk, rqd, false);
 }
 
