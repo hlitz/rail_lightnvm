@@ -669,8 +669,6 @@ next_rq:
 				meta_list[i].lba = cpu_to_le64(ADDR_EMPTY);
 				rqd.ppa_list[i] =
 					addr_to_gen_ppa(pblk, paddr, id);
-				if(test_and_set_bit(paddr, line->rail_bitmap)==0)
-				  printk(KERN_EMERG "hmm emata not yet set in reail bitmap %lx\n", paddr);
 			}
 		}
 		pblk_down_page(pblk, rqd.ppa_list, rqd.nr_ppas, PBLK_RAIL_WRITE);
@@ -1134,14 +1132,14 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 			     bit++) {
 				int set;
 
-				set = !test_bit(off + bit,
+				set = !test_and_set_bit(off + bit,
 						line->invalid_bitmap);
 				line->rail_parity_secs += set;
 			}
 		}
 	}
 
-       if (lm->sec_per_line - line->sec_in_line !=
+       if (lm->sec_per_line - line->sec_in_line + line->rail_parity_secs !=
 		bitmap_weight(line->invalid_bitmap, lm->sec_per_line)) {
 		spin_lock(&line->lock);
 		line->state = PBLK_LINESTATE_BAD;

@@ -84,6 +84,7 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 		} else {
 			lba_list[paddr] = meta_list[i].lba = addr_empty;
 			__pblk_map_invalidate(pblk, line, paddr);
+			WARN_ON(test_and_set_bit(paddr, line->rail_bitmap));
 		}
 	}
 

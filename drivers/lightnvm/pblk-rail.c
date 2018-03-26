@@ -16,28 +16,6 @@
 #include "pblk.h"
 #include <linux/log2.h>
 
-static int pblk_read_check(struct pblk *pblk, struct nvm_rq *rqd,
-			   sector_t blba)
-{
-	struct pblk_sec_meta *meta_list = rqd->meta_list;
-	int nr_lbas = rqd->nr_ppas;
-	int i;
-	bool bug = false;
-	for (i = 0; i < nr_lbas; i++) {
-		u64 lba = le64_to_cpu(meta_list[i].lba);
-
-		if (lba == ADDR_EMPTY)
-			continue;
-
-		//WARN(lba != blba + i, "pblk: corrupted read LBA %lx %lx\n", (unsigned long)lba, (unsigned long)blba);
-		if(lba != blba + i) {
-		  bug = true;
-		  printk(KERN_EMERG "pblk: corrupted read LBA %lx %lx\n", (unsigned long)lba, (unsigned long)blba);
-		}
-	}
-	return bug;
-}
-
 unsigned int pblk_rail_enabled(struct pblk *pblk)
 {
   	struct nvm_tgt_dev *dev = pblk->dev;
@@ -196,14 +174,22 @@ u64 * pblk_rail_lba(struct pblk_rail *rail, int sentry)
 
 unsigned int pblk_rail_sec_to_stride(struct pblk *pblk, unsigned int sec)
 {
-	return (sec % pblk_rail_psec_per_stripe(pblk)) / pblk->min_write_pgs ;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	unsigned int sec_in_stripe = sec % pblk_rail_sec_per_stripe(pblk); 
+	int page = sec_in_stripe / pblk->min_write_pgs;
+
+	return page % pblk_rail_nr_parity_luns(pblk);
 }
 
 unsigned int pblk_rail_sec_to_idx(struct pblk *pblk, unsigned int sec)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	unsigned int sec_in_stripe = sec % pblk_rail_sec_per_stripe(pblk); 
+	int distance = (geo->all_luns / geo->rail_stride_width)
+			  * pblk->min_write_pgs;
 
-	return sec_in_stripe / pblk_rail_psec_per_stripe(pblk);
+	return sec_in_stripe / distance;
 }
 
 /* Returns the stripe the line's cur_sec is in */
@@ -420,19 +406,23 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 			int distance = (geo->all_luns / geo->rail_stride_width)
 			  * pblk->min_write_pgs;
 
-			if (!test_bit(paddr - distance * (nr_data - i),
-				      line->rail_bitmap) &&
-			    sec < pblk->rail.sec2rb[stride][i].nr_valid) {
+			if (!test_bit(paddr + sec - distance * (nr_data - i),
+				      line->rail_bitmap)) {
 				unsigned int pos;
-				void *addr;
 				struct pblk_w_ctx *w_ctx;
+				u64 lba_src;
+				struct pblk_rb_entry *entry;
 
 				pos = pblk->rail.sec2rb[stride][i].pos;
 				pos = pblk_rb_wrap_pos(&pblk->rwb, pos + sec);
-				addr = pblk->rwb.entries[pos].data;
-				pblk_rail_compute_parity(pg_addr, addr);
-				w_ctx = pblk_rb_w_ctx(&pblk->rwb, pos);
-				pblk_rail_lba_parity(lba, &w_ctx->lba);
+				entry = &pblk->rwb.entries[pos];
+				w_ctx = &entry->w_ctx;
+				lba_src = le64_to_cpu(w_ctx->lba);
+				if (lba_src == ADDR_EMPTY)
+					continue;
+
+				pblk_rail_compute_parity(pg_addr, entry->data);
+				pblk_rail_lba_parity(lba, &lba_src);
 			}
 		}
 	}
@@ -465,10 +455,8 @@ int pblk_rail_submit_write(struct pblk *pblk)
 
 		/* This only happens when emeta secs extend into the parity
 		 * region in the last stride of a line */
-		if (!line->rail_parity_secs) {
-			WARN_ON (!test_bit(i, line->invalid_bitmap));
+		if (!line->rail_parity_secs)
 			continue;
-		}
 
 		rqd = pblk_alloc_rqd(pblk, PBLK_WRITE);
 		if (IS_ERR(rqd)) {
@@ -524,7 +512,7 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 	int i, hole, n_idx = 0;
 	int orig_ppa = 0;
 	__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
-int rail_ppas=0;
+
 	if (unlikely(rqd->nr_ppas == 1)) {
 		struct ppa_addr ppa;
 
@@ -563,10 +551,12 @@ int rail_ppas=0;
 			src_bv = rail_bio->bi_io_vec[n_idx];
 			src_p = kmap_atomic(src_bv.bv_page);
 
-			pblk_rail_compute_parity(dst_p + dst_bv.bv_offset,
-						 src_p + src_bv.bv_offset);
-			if(lba_list_media[n_idx] != addr_empty)
+			if(lba_list_media[n_idx] != addr_empty) {
+				pblk_rail_compute_parity(dst_p + dst_bv.bv_offset,
+							 src_p + src_bv.bv_offset);
+
 				pblk_rail_lba_parity(&meta_list[hole].lba, &lba_list_media[n_idx]);
+			}
 			kunmap_atomic(src_p);
 			mempool_free(src_bv.bv_page, pblk->page_bio_pool);
 			n_idx++;
@@ -580,35 +570,10 @@ int rail_ppas=0;
 	} while (i < r_ctx->nr_orig_secs_as_rail);
 
 	bio_put(rail_bio);
-	rail_ppas=rqd->nr_ppas;
 	r_ctx->private = NULL;
 	bio_endio(orig_bio);
 	rqd->bio = orig_bio;
 	rqd->nr_ppas = r_ctx->nr_orig_secs;
-
-	if(pblk_read_check(pblk, rqd,
-			   r_ctx->lba)){
-	  int i, hole;
-	  printk(KERN_EMERG "bitmap %lx\n", (unsigned long)r_ctx->bitmap);
-	  for(i=0;i<rail_ppas;i++){
-	    printk(KERN_EMERG "lba media %llx\n", lba_list_media[i]);
-	  }
-	  for(i=0;i<rqd->nr_ppas;i++){
-	    printk(KERN_EMERG "lba after %llx\n", meta_list[i].lba);
-	  }
-	  for(i=0;i<rail_ppas;i++)
-	    printk(KERN_EMERG "ppa %llx\n", rqd->ppa_list[i].ppa);
-	  i=0;
-	  hole = find_first_bit(&r_ctx->bitmap, PBLK_MAX_REQ_ADDRS);
-	  do {
-		hole = find_next_bit(&r_ctx->bitmap, PBLK_MAX_REQ_ADDRS,
-					  hole + 1);
-		printk(KERN_EMERG "hole %i i %i orig %i\n", hole, i, r_ctx->nr_orig_secs_as_rail);
-		i++;
-	  } while (i < r_ctx->nr_orig_secs_as_rail);
-
-	}
-	  
 
 	return __pblk_end_io_read(pblk, rqd, false);
 }
