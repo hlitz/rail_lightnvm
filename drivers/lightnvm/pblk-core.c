@@ -1159,29 +1159,36 @@ static int pblk_line_prepare(struct pblk *pblk, struct pblk_line *line)
 	struct pblk_line_meta *lm = &pblk->lm;
 	int blk_in_line = atomic_read(&line->blk_in_line);
 
-	line->map_bitmap = kzalloc(lm->sec_bitmap_len, GFP_ATOMIC);
-	if (!line->map_bitmap)
+	lockdep_assert_held(&l_mg->free_lock);
+	spin_unlock(&l_mg->free_lock);
+	line->map_bitmap = kzalloc(lm->sec_bitmap_len, GFP_KERNEL);
+	if (!line->map_bitmap) {
+		spin_lock(&l_mg->free_lock);
 		return -ENOMEM;
+	}
 
 	/* will be initialized using bb info from map_bitmap */
-	line->invalid_bitmap = kmalloc(lm->sec_bitmap_len, GFP_ATOMIC);
+	line->invalid_bitmap = kmalloc(lm->sec_bitmap_len, GFP_KERNEL);
 	if (!line->invalid_bitmap) {
 		kfree(line->map_bitmap);
+		spin_lock(&l_mg->free_lock);
 		return -ENOMEM;
 	}
 
         /* will be initialized using bb info from map_bitmap */
-	line->rail_bitmap = kzalloc(lm->sec_bitmap_len, GFP_ATOMIC);
+	line->rail_bitmap = kzalloc(lm->sec_bitmap_len, GFP_KERNEL);
 	if (!line->rail_bitmap) {
 		kfree(line->invalid_bitmap);
 		kfree(line->map_bitmap);
+		spin_lock(&l_mg->free_lock);
 		return -ENOMEM;
         }
-	
+	spin_lock(&l_mg->free_lock);
 	spin_lock(&line->lock);
 	if (line->state != PBLK_LINESTATE_FREE) {
 		kfree(line->map_bitmap);
 		kfree(line->invalid_bitmap);
+		kfree(line->rail_bitmap);
 		spin_unlock(&line->lock);
 		WARN(1, "pblk: corrupted line %d, state %d\n",
 							line->id, line->state);
