@@ -513,6 +513,19 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 
 			return NVM_IO_OK;
 		}
+		else {
+			if (rqd->error)
+				pblk_log_read_err(pblk, rqd);
+#ifdef CONFIG_NVM_DEBUG
+			else
+				WARN_ONCE(bio->bi_status, "pblk: corrupted read error\n");
+
+			atomic_long_add(rqd->nr_ppas, &pblk->sync_reads);
+			atomic_long_sub(rqd->nr_ppas, &pblk->inflight_reads);
+#endif
+
+			atomic_dec(&pblk->inflight_io);
+		}
 	}
 
 	/* The read bio requires RAIL reads to be fullfilled.
