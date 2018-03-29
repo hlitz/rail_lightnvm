@@ -113,7 +113,7 @@ enum {
 #define pblk_dma_ppa_size (sizeof(u64) * PBLK_MAX_REQ_ADDRS)
 
 /* RAIL data structures */
-struct sec2rb_entry {
+struct p2b_entry {
 	unsigned int pos;               /* Position in the ring buffer */
 	unsigned char nr_valid;         /* Non-padded (flush), valid sectors */
 	struct ppa_addr ppa;
@@ -129,7 +129,7 @@ struct rail_stride {
 struct pblk_rail {
 	struct pblk_line *prev_rq_line; /* Line of in-flight parity write */
 	unsigned int prev_nr_secs;      /* Number of sectors of in-flight parity write */
-	struct sec2rb_entry **sec2rb;   /* Maps RAIL sectors to rb pos */
+	struct p2b_entry **p2b;         /* Maps RAIL sectors to rb pos */
 	struct page *pages;             /* Pages to hold parity writes */
 	unsigned long reads;
 	unsigned long rail_reads;
@@ -1400,8 +1400,6 @@ static inline void pblk_setup_uuid(struct pblk *pblk)
 int pblk_rail_init(struct pblk *pblk);
 void pblk_rail_tear_down(struct pblk *pblk);
 unsigned int pblk_rail_enabled(struct pblk *pblk);
-u64 pblk_rail_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
-			 int nr_valid, unsigned int sentry);
 void pblk_rail_track_sec(struct pblk *pblk, struct pblk_line *line, int cur_sec, 
 			 int nr_valid, int sentry);
 int pblk_rail_sched_parity(struct pblk *pblk);

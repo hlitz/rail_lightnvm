@@ -60,41 +60,11 @@ unsigned int pblk_rail_psec_per_stripe(struct pblk *pblk)
 
 unsigned int pblk_rail_dsec_per_stripe(struct pblk *pblk)
 {
-	unsigned int dsecs;
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 
-	dsecs = (geo->rail_stride_width - 1) *
-		pblk_rail_psec_per_stripe(pblk);
-
-	BUG_ON(dsecs != (pblk_rail_sec_per_stripe(pblk) -
-			 pblk_rail_psec_per_stripe(pblk)));
-
-	return dsecs;
-}
-
-unsigned int pblk_rail_stripe_bad_psecs(struct pblk *pblk, int stripe)
-{
-	struct pblk_line *line = pblk_line_get_data(pblk);
-	unsigned int byte_offset;
-	unsigned char * parity_bitmap;
-
-	byte_offset = (stripe * pblk_rail_sec_per_stripe(pblk) +
-		       pblk_rail_dsec_per_stripe(pblk)) >> BYTE_SHIFT;
-	parity_bitmap = (unsigned char *)line->map_bitmap + byte_offset;
-
-	BUG_ON(byte_offset > (pblk->lm.sec_per_line >> BYTE_SHIFT));
-
-	return bitmap_weight((unsigned long *)parity_bitmap, 
-			     pblk_rail_psec_per_stripe(pblk));
-}
-
-unsigned int pblk_rail_stripe_good_psecs(struct pblk *pblk, int stripe)
-{
-	unsigned int secs = pblk_rail_psec_per_stripe(pblk);
-	unsigned int bad_secs = pblk_rail_stripe_bad_psecs(pblk, stripe);
-
-	return secs - bad_secs;
+	return (geo->rail_stride_width - 1) *
+	  pblk_rail_psec_per_stripe(pblk);
 }
 
 /* Wraps around luns * channels */
@@ -167,14 +137,8 @@ int pblk_rail_luns_busy(struct pblk *pblk, int lun_id)
 	return 0;
 } 
 
-u64 * pblk_rail_lba(struct pblk_rail *rail, int sentry)
-{
-	return &rail->lba[sentry]; 
-}
-
 unsigned int pblk_rail_sec_to_stride(struct pblk *pblk, unsigned int sec)
 {
-	struct nvm_tgt_dev *dev = pblk->dev;
 	unsigned int sec_in_stripe = sec % pblk_rail_sec_per_stripe(pblk); 
 	int page = sec_in_stripe / pblk->min_write_pgs;
 
@@ -201,11 +165,7 @@ unsigned int pblk_rail_cur_stripe(struct pblk *pblk)
 	return sec >> get_count_order(pblk_rail_sec_per_stripe(pblk));
 }
 
-int pblk_rail_stripe_open(struct pblk *pblk, unsigned int sec)
-{
-	return (sec % pblk_rail_sec_per_stripe(pblk) == 0);
-}
-
+/* Checks whether we have to schedule parity writes */
 int pblk_rail_sched_parity(struct pblk *pblk)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
@@ -240,7 +200,7 @@ int pblk_rail_init(struct pblk *pblk)
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
-	unsigned int i;
+	unsigned int i, p2be;
 	unsigned int nr_strides;
 	unsigned int psecs;
 	void *kaddr;
@@ -257,34 +217,45 @@ int pblk_rail_init(struct pblk *pblk)
 	}
 
 	psecs = pblk_rail_psec_per_stripe(pblk);
-
 	nr_strides = pblk_rail_dsec_per_stripe(pblk) / 
 		(geo->rail_stride_width - 1);
 
-	pblk->rail.sec2rb = kmalloc(nr_strides * sizeof(struct sec2rb_entry *),
+	pblk->rail.p2b = kmalloc(nr_strides * sizeof(struct p2b_entry *),
 				    GFP_KERNEL);
+	if (!pblk->rail.p2b)
+		return -ENOMEM;
 
-	for (i = 0; i < nr_strides; i++) {
+	for (p2be = 0; p2be < nr_strides; p2be++) {
 		int e;
 		
-		pblk->rail.sec2rb[i] = kmalloc((geo->rail_stride_width - 1) *
-					       sizeof(struct sec2rb_entry),
+		pblk->rail.p2b[p2be] = kmalloc((geo->rail_stride_width - 1) *
+					       sizeof(struct p2b_entry),
 					       GFP_KERNEL);
+		if (!pblk->rail.p2b[p2be])
+			goto free_p2b_entries;
+
 		for (e = 0; e < geo->rail_stride_width - 1; e++) {
-			pblk->rail.sec2rb[i][e].pos = PBLK_RAIL_EMPTY;
-			pblk->rail.sec2rb[i][e].nr_valid = ~0x0;
+			pblk->rail.p2b[p2be][e].pos = PBLK_RAIL_EMPTY;
+			pblk->rail.p2b[p2be][e].nr_valid = ~0x0;
 		}
 	}
 
 	pblk->rail.data = kmalloc(psecs * sizeof(void *), GFP_KERNEL);
-	pblk->rail.pages = alloc_pages(GFP_KERNEL, get_count_order(psecs));
-	kaddr = page_address(pblk->rail.pages);
+	if (!pblk->rail.data)
+		goto free_p2b_entries;
 
+	pblk->rail.pages = alloc_pages(GFP_KERNEL, get_count_order(psecs));
+	if (!pblk->rail.pages)
+		goto free_data;
+
+	kaddr = page_address(pblk->rail.pages);
 	for (i = 0; i < psecs; i++)
 		pblk->rail.data[i] = kaddr + i * PBLK_EXPOSED_PAGE_SIZE;
 
 	pblk->rail.lba = kmalloc(psecs * sizeof(u64 *), GFP_KERNEL);
-	
+	if (!pblk->rail.lba)
+		goto free_pages;
+
 	pblk->rail.prev_rq_line = NULL;
 	pblk->rail.prev_nr_secs = 0;
 	pblk->rail.enabled = (PBLK_RAIL_WRITE | PBLK_RAIL_ERASE);
@@ -292,12 +263,26 @@ int pblk_rail_init(struct pblk *pblk)
 						      BITS_PER_LONG) *
 					 sizeof(unsigned long), GFP_KERNEL);
 	if (!pblk->rail.busy_bitmap)
-		return -ENOMEM;
+		goto free_lba;
 
 	printk(KERN_EMERG "Initialized RAIL with stride width %d\n",
 	       geo->rail_stride_width);
 
 	return 0;
+
+free_lba:
+	kfree(pblk->rail.lba);
+free_pages:
+	free_pages((unsigned long)page_address(pblk->rail.pages),
+		   get_count_order(psecs));
+free_data:
+	kfree(pblk->rail.data);
+free_p2b_entries:
+	for (p2be = p2be - 1; p2be >= 0; p2be--)
+		kfree(pblk->rail.p2b[p2be]);
+	kfree(pblk->rail.p2b);
+
+	return -ENOMEM;
 }
 
 void pblk_rail_tear_down(struct pblk *pblk)
@@ -315,16 +300,16 @@ void pblk_rail_tear_down(struct pblk *pblk)
 	nr_strides = pblk_rail_dsec_per_stripe(pblk) /
 		(geo->rail_stride_width - 1);
 
-	for (i = 0; i < nr_strides; i++)
-		kfree(pblk->rail.sec2rb[i]);
-
-	kfree(pblk->rail.sec2rb);
-	kfree(pblk->rail.data);
-	free_pages((unsigned long)page_address(pblk->rail.pages), 
+	kfree(pblk->rail.lba);
+	free_pages((unsigned long)page_address(pblk->rail.pages),
 		   get_count_order(psecs));
+	kfree(pblk->rail.data);
+	for (i = 0; i < nr_strides; i++)
+		kfree(pblk->rail.p2b[i]);
+	kfree(pblk->rail.p2b);
 }
 
-void pblk_rail_compute_parity(void *dest, void *src)
+void pblk_rail_data_parity(void *dest, void *src)
 {
 	unsigned int i;
 
@@ -335,23 +320,6 @@ void pblk_rail_compute_parity(void *dest, void *src)
 void pblk_rail_lba_parity(u64 *dest, u64 *src)
 {
 	*dest ^= *src;
-}
-
-void pblk_rail_stride_put(struct kref *ref)
-{
-	struct rail_stride *stride = container_of(ref, struct rail_stride, ref);
-	struct pblk_line *line = stride->line;
-	struct pblk *pblk = line->pblk;
-	unsigned long flags;
-	int pos, ret;
-
-	/* Delayed sync of all writes of the current rail stride */ 
-	pos = pblk_rb_sync_init(&pblk->rwb, &flags);
-	ret = pblk_rb_sync_advance(&pblk->rwb, stride->valid_secs);
-	pblk_rb_sync_end(&pblk->rwb, &flags);
-	WARN_ON(ret != pblk_rb_wrap_pos(&pblk->rwb, pos + stride->valid_secs));
-
-	return;
 }
 
 void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd,
@@ -383,7 +351,7 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 		struct page *page;
 		u64 *lba;
 
-		lba = pblk_rail_lba(&pblk->rail, stride * pblk->min_write_pgs + sec); 
+		lba = &pblk->rail.lba[stride * pblk->min_write_pgs + sec];
 		pg_addr = pblk->rail.data[stride * pblk->min_write_pgs + sec];
 		page = virt_to_page(pg_addr);
 
@@ -413,7 +381,7 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 				u64 lba_src;
 				struct pblk_rb_entry *entry;
 
-				pos = pblk->rail.sec2rb[stride][i].pos;
+				pos = pblk->rail.p2b[stride][i].pos;
 				pos = pblk_rb_wrap_pos(&pblk->rwb, pos + sec);
 				entry = &pblk->rwb.entries[pos];
 				w_ctx = &entry->w_ctx;
@@ -421,7 +389,7 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 				if (lba_src == ADDR_EMPTY)
 					continue;
 
-				pblk_rail_compute_parity(pg_addr, entry->data);
+				pblk_rail_data_parity(pg_addr, entry->data);
 				pblk_rail_lba_parity(lba, &lba_src);
 			}
 		}
@@ -463,7 +431,7 @@ int pblk_rail_submit_write(struct pblk *pblk)
 			pr_err("pblk: cannot allocate parity write req.\n");
 			return -ENOMEM;
 		}
-		
+
 		bio = bio_alloc(GFP_KERNEL, pblk->min_write_pgs);
 		if (!bio) {
 			pr_err("pblk: cannot allocate parity write bio\n");
@@ -495,8 +463,8 @@ void pblk_rail_track_sec(struct pblk *pblk, struct pblk_line *line, int cur_sec,
 	int idx = pblk_rail_sec_to_idx(pblk, cur_sec);
 	int pos = pblk_rb_wrap_pos(&pblk->rwb, sentry);
 
-	pblk->rail.sec2rb[stride][idx].pos = pos;
-	pblk->rail.sec2rb[stride][idx].nr_valid = nr_valid;
+	pblk->rail.p2b[stride][idx].pos = pos;
+	pblk->rail.p2b[stride][idx].nr_valid = nr_valid;
 }
 
 /* Read Path */
@@ -552,10 +520,10 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 			src_p = kmap_atomic(src_bv.bv_page);
 
 			if(lba_list_media[n_idx] != addr_empty) {
-				pblk_rail_compute_parity(dst_p + dst_bv.bv_offset,
+				pblk_rail_data_parity(dst_p + dst_bv.bv_offset,
 							 src_p + src_bv.bv_offset);
-
-				pblk_rail_lba_parity(&meta_list[hole].lba, &lba_list_media[n_idx]);
+				pblk_rail_lba_parity(&meta_list[hole].lba,
+						     &lba_list_media[n_idx]);
 			}
 			kunmap_atomic(src_p);
 			mempool_free(src_bv.bv_page, pblk->page_bio_pool);
@@ -563,7 +531,6 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 		}
 
 		kunmap_atomic(dst_p);
-
 		i++;
 		hole = find_next_bit(&r_ctx->bitmap, PBLK_MAX_REQ_ADDRS,
 					  hole + 1);
@@ -701,6 +668,7 @@ err:
 	return NVM_IO_ERR;
 }
 
+/* Per stripe semaphore, enforces one writer per stripe */
 void pblk_rail_down_stripe(struct pblk *pblk, int lun, int access_type)
 {
 	int timeout = 0;
@@ -716,6 +684,7 @@ void pblk_rail_down_stripe(struct pblk *pblk, int lun, int access_type)
 	}
 }
 
+/* Notify readers that LUN is serving high latency operation */
 void pblk_rail_notify_reader_down(struct pblk *pblk, int lun, int access_type)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
