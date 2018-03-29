@@ -71,7 +71,7 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 			}
 			else {
 				u64 *lba;
-			        lba = pblk_rail_lba(&pblk->rail, sentry + i);
+				lba = &pblk->rail.lba[sentry + i];
 				meta_list[i].lba = cpu_to_le64(*lba);
 				lba_list[paddr] = cpu_to_le64(*lba);
 				line->rail_parity_secs--;
