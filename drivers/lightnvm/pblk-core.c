@@ -1158,9 +1158,11 @@ static int pblk_line_prepare(struct pblk *pblk, struct pblk_line *line)
 {
 	struct pblk_line_meta *lm = &pblk->lm;
 	int blk_in_line = atomic_read(&line->blk_in_line);
+	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
 
 	lockdep_assert_held(&l_mg->free_lock);
 	spin_unlock(&l_mg->free_lock);
+
 	line->map_bitmap = kzalloc(lm->sec_bitmap_len, GFP_KERNEL);
 	if (!line->map_bitmap) {
 		spin_lock(&l_mg->free_lock);
