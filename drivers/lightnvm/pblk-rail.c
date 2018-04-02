@@ -519,6 +519,7 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 			src_bv = rail_bio->bi_io_vec[n_idx];
 			src_p = kmap_atomic(src_bv.bv_page);
 
+			WARN_ON(lba_list_media[n_idx] == addr_empty);
 			if(lba_list_media[n_idx] != addr_empty) {
 				pblk_rail_data_parity(dst_p + dst_bv.bv_offset,
 							 src_p + src_bv.bv_offset);

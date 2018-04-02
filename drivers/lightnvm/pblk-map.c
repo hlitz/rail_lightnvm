@@ -75,12 +75,16 @@ static void pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 				meta_list[i].lba = cpu_to_le64(*lba);
 				lba_list[paddr] = cpu_to_le64(*lba);
 				line->rail_parity_secs--;
+				WARN_ON(meta_list[i].lba == addr_empty);
 			}
 
-			if (lba_list[paddr] != addr_empty)
+			if (lba_list[paddr] != addr_empty) {
 				line->nr_valid_lbas++;
-			else
+			}
+			else {
 				atomic64_inc(&pblk->pad_wa);
+				WARN_ON(test_and_set_bit(paddr, line->rail_bitmap));
+			}
 		} else {
 			lba_list[paddr] = meta_list[i].lba = addr_empty;
 			__pblk_map_invalidate(pblk, line, paddr);
