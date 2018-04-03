@@ -587,7 +587,7 @@ try:
 			io_schedule();
 			goto try;
 		}
-
+		smp_rmb();
 		page = virt_to_page(entry->data);
 		if (!page) {
 			pr_err("pblk: could not allocate write bio page\n");
