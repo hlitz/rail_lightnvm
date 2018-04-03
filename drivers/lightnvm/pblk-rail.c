@@ -386,8 +386,11 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 				entry = &pblk->rwb.entries[pos];
 				w_ctx = &entry->w_ctx;
 				lba_src = le64_to_cpu(w_ctx->lba);
-				if (lba_src == ADDR_EMPTY)
+				if (lba_src == ADDR_EMPTY) {
+					test_and_set_bit(paddr + sec - distance * (nr_data - i),
+							 line->rail_bitmap);
 					continue;
+				}
 
 				pblk_rail_data_parity(pg_addr, entry->data);
 				pblk_rail_lba_parity(lba, &lba_src);
@@ -520,12 +523,11 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 			src_p = kmap_atomic(src_bv.bv_page);
 
 			WARN_ON(lba_list_media[n_idx] == addr_empty);
-			if(lba_list_media[n_idx] != addr_empty) {
-				pblk_rail_data_parity(dst_p + dst_bv.bv_offset,
-							 src_p + src_bv.bv_offset);
-				pblk_rail_lba_parity(&meta_list[hole].lba,
-						     &lba_list_media[n_idx]);
-			}
+			pblk_rail_data_parity(dst_p + dst_bv.bv_offset,
+					      src_p + src_bv.bv_offset);
+			pblk_rail_lba_parity(&meta_list[hole].lba,
+					     &lba_list_media[n_idx]);
+
 			kunmap_atomic(src_p);
 			mempool_free(src_bv.bv_page, pblk->page_bio_pool);
 			n_idx++;
