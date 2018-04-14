@@ -99,6 +99,10 @@ retry:
 			nr_rail_ppas += pvalid[rail_valid];
 			rail_valid++;
 			WARN_ON(test_and_set_bit(i, rail_bitmap));
+
+			if (unlikely(!advanced_bio))
+				bio_advance(bio, i * PBLK_EXPOSED_PAGE_SIZE);
+
 			advanced_bio = true;
 		} else {
 		  /* Read from media non-cached sectors */
