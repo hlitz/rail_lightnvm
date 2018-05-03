@@ -434,7 +434,7 @@ next_pad_rq:
 	}
 
 	kref_get(&pad_rq->ref);
-	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas, PBLK_RAIL_NONE);
+	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas);
 
 	ret = pblk_submit_io(pblk, rqd);
 	if (ret) {

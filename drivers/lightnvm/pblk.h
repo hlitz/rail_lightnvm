@@ -56,17 +56,9 @@
 
 #define PBLK_DEFAULT_OP (11)
 
-#define PBLK_RAIL_BAD_SEC (~0x0 - 1000)
-#define PBLK_RAIL_PADDED_SEC (PBLK_RAIL_BAD_SEC - 1)
-#define PBLK_RAIL_EMPTY (PBLK_RAIL_PADDED_SEC - 1)
-#define BYTE_SHIFT 3
+#define PBLK_RAIL_EMPTY ~0x0L
 
-enum {
-	PBLK_RAIL_NONE    = 0,
-	PBLK_RAIL_WRITE   = 1 << 0,
-	PBLK_RAIL_ERASE   = 1 << 1,
-	PBLK_RAIL_GC_ONLY = 1 << 2,
-};
+#define BYTE_SHIFT 3
 
 enum {
 	PBLK_READ		= READ,
@@ -116,27 +108,17 @@ enum {
 struct p2b_entry {
 	unsigned int pos;               /* Position in the ring buffer */
 	unsigned char nr_valid;         /* Non-padded (flush), valid sectors */
-	struct ppa_addr ppa;
-};
-
-struct rail_stride {
-	struct pblk_line *line;
-	struct kref ref;                /* In flight writes of a stride */
-	struct list_head compl_list;    /* Completed rqds of the stride */
-	unsigned int valid_secs;
 };
 
 struct pblk_rail {
-	struct pblk_line *prev_rq_line; /* Line of in-flight parity write */
-	unsigned int prev_nr_secs;      /* Number of sectors of in-flight parity write */
 	struct p2b_entry **p2b;         /* Maps RAIL sectors to rb pos */
 	struct page *pages;             /* Pages to hold parity writes */
+	void **data;                    /* Data of parity pages */
 	unsigned long reads;
 	unsigned long rail_reads;
 	unsigned long *busy_bitmap;     /* LUNs currently serving a write/erase */
-	int enabled;                    /* Enable RAIL for access types */
 	u64 *lba;                       /* parity LBA buffer */
-	void **data;                    /* parity pages buffer */
+
 };
 
 /* write buffer completion context */
@@ -841,9 +823,8 @@ int pblk_calc_secs(struct pblk *pblk, unsigned long secs_avail,
 		   unsigned long secs_to_flush);
 void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas);
 void pblk_down_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
-		  unsigned long *lun_bitmap, int access_type);
-void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
-		    int access_type);
+		  unsigned long *lun_bitmap);
+void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas);
 void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 		unsigned long *lun_bitmap);
 void pblk_end_io_sync(struct nvm_rq *rqd);
@@ -1401,7 +1382,7 @@ int pblk_rail_init(struct pblk *pblk);
 void pblk_rail_tear_down(struct pblk *pblk);
 unsigned int pblk_rail_enabled(struct pblk *pblk);
 void pblk_rail_track_sec(struct pblk *pblk, struct pblk_line *line, int cur_sec, 
-			 int nr_valid, int sentry);
+			 int nr_valid, int sentry, bool parity, bool meta);
 int pblk_rail_sched_parity(struct pblk *pblk);
 int pblk_rail_submit_write(struct pblk *pblk);
 void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd,
@@ -1420,8 +1401,8 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 void pblk_rail_stride_put(struct kref *ref);
 unsigned int pblk_rail_sec_to_stride(struct pblk *pblk, unsigned int sec);
 unsigned int pblk_rail_sec_to_idx(struct pblk *pblk, unsigned int sec);
-void pblk_rail_down_stripe(struct pblk *pblk, int lun, int access_type);
-void pblk_rail_notify_reader_down(struct pblk *pblk, int lun, int access_type);
+void pblk_rail_down_stripe(struct pblk *pblk, int lun);
+void pblk_rail_notify_reader_down(struct pblk *pblk, int lun);
 void pblk_rail_notify_reader_up(struct pblk *pblk, int lun);
 
 #endif /* PBLK_H_ */

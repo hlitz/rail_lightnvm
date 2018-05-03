@@ -146,7 +146,7 @@ static void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
 		if (c_ctx->is_rail)
 			continue;
 
-	       /* Logic error */
+	        /* Logic error */
 		if (bit > c_ctx->nr_valid) {
 			WARN_ONCE(1, "pblk: corrupted write request\n");
 			mempool_free(recovery, pblk->rec_pool);
@@ -390,7 +390,7 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 		spin_unlock(&l_mg->close_lock);
 	}
 
-	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas, PBLK_RAIL_WRITE);
+	pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas);
 
 	ret = pblk_submit_io(pblk, rqd);
 	if (ret) {

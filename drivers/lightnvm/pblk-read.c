@@ -53,7 +53,7 @@ static int pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	bool advanced_bio = false;
 	int i, j = 0;
 	int nr_rail_ppas = 0, rail_valid = 0;
-	
+
 	pblk_lookup_l2p_seq(pblk, ppas, blba, nr_secs);
 
 	for (i = 0; i < nr_secs; i++) {
@@ -149,7 +149,7 @@ static void pblk_read_check(struct pblk *pblk, struct nvm_rq *rqd,
 		if (lba == ADDR_EMPTY)
 			continue;
 
-		WARN(lba != blba + i, "pblk: corrupted read LBA %lx %lx\n", (unsigned long)lba, (unsigned long)blba);
+		WARN(lba != blba + i, "pblk: corrupted read LBA\n");
 	}
 }
 
@@ -351,7 +351,7 @@ static int pblk_read_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	struct bio *bio = rqd->bio;
 	struct ppa_addr ppa;
 	int nr_rail_ppas = 0;
-	
+
 	pblk_lookup_l2p_seq(pblk, &ppa, lba, 1);
 
 #ifdef CONFIG_NVM_DEBUG
@@ -433,7 +433,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	r_ctx->start_time = jiffies;
 	r_ctx->lba = blba;
 	memset(r_ctx->pvalid, 0, PBLK_MAX_REQ_ADDRS);
-	
+
 	/* Save the index for this bio's start. This is needed in case
 	 * we need to fill a partial read.
 	 */
@@ -499,7 +499,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 
 	/* The read bio request could be partially filled by the write buffer,
 	 * but there are some holes that need to be read from the drive.
-	 * If the bitmap is full we have only cached and RAIL reads 
+	 * If the bitmap is full we have only cached and RAIL reads
 	 * so don't submit a partial read.
 	 */
 	if (!bitmap_empty(&read_bitmap, rqd->nr_ppas) &&
@@ -509,7 +509,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 			pr_err("pblk: failed to perform partial read\n");
 			return ret;
 		}
-		
+
 		/* Complete the original bio and associated request if there are no RAIL reads*/
 		if (bitmap_empty(&rail_bitmap, rqd->nr_ppas)) {
 			bio_endio(bio);
@@ -558,7 +558,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 
 	return NVM_IO_OK;
 
- fail_rqd_free:
+fail_rqd_free:
 	pblk_free_rqd(pblk, rqd, PBLK_READ);
 	return ret;
 fail_end_io:

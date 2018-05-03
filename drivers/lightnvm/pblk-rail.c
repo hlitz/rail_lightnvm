@@ -16,23 +16,15 @@
 #include "pblk.h"
 #include <linux/log2.h>
 
-unsigned int pblk_rail_enabled(struct pblk *pblk)
-{
-  	struct nvm_tgt_dev *dev = pblk->dev;
-	struct nvm_geo *geo = &dev->geo;
-
-	return geo->rail_stride_width > 0;
-}
-
 unsigned int pblk_rail_nr_parity_luns(struct pblk *pblk)
 {
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 
-	if (!pblk_rail_enabled(pblk))
+	if (geo->rail_stride_width)
 		return 0;
-		
+
 	return lm->blk_per_line / geo->rail_stride_width;
 }
 
@@ -72,7 +64,7 @@ unsigned int pblk_rail_wrap_lun(struct pblk *pblk, unsigned int lun)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
-	
+
 	return (lun & (geo->all_luns - 1));
 }
 
@@ -135,11 +127,11 @@ int pblk_rail_luns_busy(struct pblk *pblk, int lun_id)
 	}
 
 	return 0;
-} 
+}
 
 unsigned int pblk_rail_sec_to_stride(struct pblk *pblk, unsigned int sec)
 {
-	unsigned int sec_in_stripe = sec % pblk_rail_sec_per_stripe(pblk); 
+	unsigned int sec_in_stripe = sec % pblk_rail_sec_per_stripe(pblk);
 	int page = sec_in_stripe / pblk->min_write_pgs;
 
 	return page % pblk_rail_nr_parity_luns(pblk);
@@ -149,7 +141,7 @@ unsigned int pblk_rail_sec_to_idx(struct pblk *pblk, unsigned int sec)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
-	unsigned int sec_in_stripe = sec % pblk_rail_sec_per_stripe(pblk); 
+	unsigned int sec_in_stripe = sec % pblk_rail_sec_per_stripe(pblk);
 	int distance = (geo->all_luns / geo->rail_stride_width)
 			  * pblk->min_write_pgs;
 
@@ -205,10 +197,8 @@ int pblk_rail_init(struct pblk *pblk)
 	unsigned int psecs;
 	void *kaddr;
 
-	if (geo->rail_stride_width == 0) {
-		pblk->rail.enabled = 0;
+	if (!geo->rail_stride_width)
 		return 0;
-	}
 
 	if (((geo->all_luns % geo->rail_stride_width) != 0) ||
 	    (geo->all_luns < geo->rail_stride_width)) {
@@ -217,7 +207,7 @@ int pblk_rail_init(struct pblk *pblk)
 	}
 
 	psecs = pblk_rail_psec_per_stripe(pblk);
-	nr_strides = pblk_rail_dsec_per_stripe(pblk) / 
+	nr_strides = pblk_rail_dsec_per_stripe(pblk) /
 		(geo->rail_stride_width - 1);
 
 	pblk->rail.p2b = kmalloc(nr_strides * sizeof(struct p2b_entry *),
@@ -227,7 +217,7 @@ int pblk_rail_init(struct pblk *pblk)
 
 	for (p2be = 0; p2be < nr_strides; p2be++) {
 		int e;
-		
+
 		pblk->rail.p2b[p2be] = kmalloc((geo->rail_stride_width - 1) *
 					       sizeof(struct p2b_entry),
 					       GFP_KERNEL);
@@ -256,9 +246,6 @@ int pblk_rail_init(struct pblk *pblk)
 	if (!pblk->rail.lba)
 		goto free_pages;
 
-	pblk->rail.prev_rq_line = NULL;
-	pblk->rail.prev_nr_secs = 0;
-	pblk->rail.enabled = (PBLK_RAIL_WRITE | PBLK_RAIL_ERASE);
 	pblk->rail.busy_bitmap = kzalloc(DIV_ROUND_UP(lm->blk_per_line,
 						      BITS_PER_LONG) *
 					 sizeof(unsigned long), GFP_KERNEL);
@@ -460,14 +447,18 @@ int pblk_rail_submit_write(struct pblk *pblk)
 }
 
 void pblk_rail_track_sec(struct pblk *pblk, struct pblk_line *line, int cur_sec,
-			 int nr_valid, int sentry) 
+			 int nr_valid, int sentry, bool parity, bool meta) 
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	int stride = pblk_rail_sec_to_stride(pblk, cur_sec);
 	int idx = pblk_rail_sec_to_idx(pblk, cur_sec);
 	int pos = pblk_rb_wrap_pos(&pblk->rwb, sentry);
 
-	pblk->rail.p2b[stride][idx].pos = pos;
-	pblk->rail.p2b[stride][idx].nr_valid = nr_valid;
+	if (geo->rail_stride_width && !parity && !meta) {
+		pblk->rail.p2b[stride][idx].pos = pos;
+		pblk->rail.p2b[stride][idx].nr_valid = nr_valid;
+	}
 }
 
 /* Read Path */
@@ -578,13 +569,13 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 		pblk_dev_ppa_set_chnl(&ppa, chnl);
 
 		line = &pblk->lines[pblk_ppa_to_line(ppa)];
-		
+
 		/* Do not read from bad blocks */
-		if (test_bit(pblk_dev_ppa_to_line_addr(pblk, ppa), 
+		if (test_bit(pblk_dev_ppa_to_line_addr(pblk, ppa),
 			     line->rail_bitmap)) {
 			/* We cannot recompute the original sec if parity is bad */
 			if (neighbor >= pblk_rail_nr_data_luns(pblk)){
-				*pvalid = 0; 
+				*pvalid = 0;
 				return 0;
 			}
 
@@ -624,7 +615,7 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 
 	for (i = 0; i < nr_orig_secs_as_rail; i++)
 		nr_holes += pvalid[i];
-	
+
 	new_bio = bio_alloc(GFP_KERNEL, nr_holes);
 
 	if (pblk_bio_add_pages(pblk, new_bio, GFP_KERNEL, nr_holes, false))
@@ -662,7 +653,7 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	}
 
 	return NVM_IO_OK;
-	
+
 err_pages:
 	pblk_bio_free_pages(pblk, bio, 0, new_bio->bi_vcnt);
 err:
@@ -672,11 +663,13 @@ err:
 }
 
 /* Per stripe semaphore, enforces one writer per stripe */
-void pblk_rail_down_stripe(struct pblk *pblk, int lun, int access_type)
+void pblk_rail_down_stripe(struct pblk *pblk, int lun)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	int timeout = 0;
-	
-	if (access_type & pblk->rail.enabled) {
+
+	if (geo->rail_stride_width) {
 		while (pblk_rail_luns_busy(pblk, lun)) {
 			timeout++;
 			if (timeout >= 10000000) {
@@ -688,16 +681,12 @@ void pblk_rail_down_stripe(struct pblk *pblk, int lun, int access_type)
 }
 
 /* Notify readers that LUN is serving high latency operation */
-void pblk_rail_notify_reader_down(struct pblk *pblk, int lun, int access_type)
+void pblk_rail_notify_reader_down(struct pblk *pblk, int lun)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
-	bool gc_only = pblk->rail.enabled & PBLK_RAIL_GC_ONLY;
 
-	if (gc_only && !(access_type & PBLK_RAIL_GC_ONLY))
-		return;
-
-	if (geo->rail_stride_width && (access_type & pblk->rail.enabled))
+	if (geo->rail_stride_width)
 		WARN_ON(test_and_set_bit(lun, pblk->rail.busy_bitmap));
 }
 
