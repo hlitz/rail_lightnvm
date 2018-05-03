@@ -1156,19 +1156,19 @@ static int pblk_line_prepare(struct pblk *pblk, struct pblk_line *line)
 	struct pblk_line_meta *lm = &pblk->lm;
 	int blk_in_line = atomic_read(&line->blk_in_line);
 
-	line->map_bitmap = kzalloc(lm->sec_bitmap_len, GFP_KERNEL);
+	line->map_bitmap = kzalloc(lm->sec_bitmap_len, GFP_ATOMIC);
 	if (!line->map_bitmap)
 		return -ENOMEM;
 
 	/* will be initialized using bb info from map_bitmap */
-	line->invalid_bitmap = kmalloc(lm->sec_bitmap_len, GFP_KERNEL);
+	line->invalid_bitmap = kmalloc(lm->sec_bitmap_len, GFP_ATOMIC);
 	if (!line->invalid_bitmap) {
 		kfree(line->map_bitmap);
 		return -ENOMEM;
 	}
 
         /* will be initialized using bb info from map_bitmap */
-	line->rail_bitmap = kzalloc(lm->sec_bitmap_len, GFP_KERNEL);
+	line->rail_bitmap = kzalloc(lm->sec_bitmap_len, GFP_ATOMIC);
 	if (!line->rail_bitmap) {
 		kfree(line->invalid_bitmap);
 		kfree(line->map_bitmap);

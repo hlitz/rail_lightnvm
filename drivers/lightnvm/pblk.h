@@ -1380,7 +1380,6 @@ static inline void pblk_setup_uuid(struct pblk *pblk)
 
 int pblk_rail_init(struct pblk *pblk);
 void pblk_rail_tear_down(struct pblk *pblk);
-unsigned int pblk_rail_enabled(struct pblk *pblk);
 void pblk_rail_track_sec(struct pblk *pblk, struct pblk_line *line, int cur_sec, 
 			 int nr_valid, int sentry, bool parity, bool meta);
 int pblk_rail_sched_parity(struct pblk *pblk);
@@ -1391,16 +1390,11 @@ unsigned int pblk_rail_sec_per_stripe(struct pblk *pblk);
 unsigned int pblk_rail_dsec_per_stripe(struct pblk *pblk);
 unsigned int pblk_rail_psec_per_stripe(struct pblk *pblk);
 int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa);
-int pblk_rail_luns_busy(struct pblk *pblk, int lun_id);
-u64 * pblk_rail_lba(struct pblk_rail *rail, int sentry);
 int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 			 struct ppa_addr *rail_ppas, unsigned char *pvalid);
 int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 		       unsigned int bio_init_idx, unsigned long *read_bitmap,
 		       struct ppa_addr *rail_ppa_list, unsigned char *pvalid);
-void pblk_rail_stride_put(struct kref *ref);
-unsigned int pblk_rail_sec_to_stride(struct pblk *pblk, unsigned int sec);
-unsigned int pblk_rail_sec_to_idx(struct pblk *pblk, unsigned int sec);
 void pblk_rail_down_stripe(struct pblk *pblk, int lun);
 void pblk_rail_notify_reader_down(struct pblk *pblk, int lun);
 void pblk_rail_notify_reader_up(struct pblk *pblk, int lun);

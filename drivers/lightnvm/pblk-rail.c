@@ -447,7 +447,7 @@ int pblk_rail_submit_write(struct pblk *pblk)
 }
 
 void pblk_rail_track_sec(struct pblk *pblk, struct pblk_line *line, int cur_sec,
-			 int nr_valid, int sentry, bool parity, bool meta) 
+			 int nr_valid, int sentry, bool parity, bool meta)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
