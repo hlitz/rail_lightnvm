@@ -451,14 +451,16 @@ void pblk_rail_track_sec(struct pblk *pblk, struct pblk_line *line, int cur_sec,
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
-	int stride = pblk_rail_sec_to_stride(pblk, cur_sec);
-	int idx = pblk_rail_sec_to_idx(pblk, cur_sec);
-	int pos = pblk_rb_wrap_pos(&pblk->rwb, sentry);
+	int stride, idx, pos;
 
-	if (geo->rail_stride_width && !parity && !meta) {
-		pblk->rail.p2b[stride][idx].pos = pos;
-		pblk->rail.p2b[stride][idx].nr_valid = nr_valid;
-	}
+	if (!geo->rail_stride_width || parity || meta)
+		return;
+
+	stride = pblk_rail_sec_to_stride(pblk, cur_sec);
+	idx = pblk_rail_sec_to_idx(pblk, cur_sec);
+	pos = pblk_rb_wrap_pos(&pblk->rwb, sentry);
+	pblk->rail.p2b[stride][idx].pos = pos;
+	pblk->rail.p2b[stride][idx].nr_valid = nr_valid;
 }
 
 /* Read Path */
