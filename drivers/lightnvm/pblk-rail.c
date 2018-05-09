@@ -22,7 +22,7 @@ unsigned int pblk_rail_nr_parity_luns(struct pblk *pblk)
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 
-	if (geo->rail_stride_width)
+	if (!geo->rail_stride_width)
 		return 0;
 
 	return lm->blk_per_line / geo->rail_stride_width;
@@ -280,7 +280,7 @@ void pblk_rail_tear_down(struct pblk *pblk)
 	unsigned int nr_strides;
 	unsigned int psecs;
 
-	if (geo->rail_stride_width == 0)
+	if (!geo->rail_stride_width)
 		return;
 
 	psecs = pblk_rail_psec_per_stripe(pblk);
