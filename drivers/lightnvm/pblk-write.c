@@ -141,7 +141,6 @@ static void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
 		line = &pblk->lines[pblk_ppa_to_line(ppa)];
 		WARN_ON(test_and_set_bit(pblk_dev_ppa_to_line_addr(pblk, ppa),
 					 line->rail_bitmap));
-		WARN_ON(c_ctx->is_rail);
 		/* Do not retry parity writes (best effort) */
 		if (c_ctx->is_rail)
 			continue;
@@ -379,7 +378,9 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 		spin_unlock(&meta_line->lock);
 		for (j = 0; j < rq_ppas; j++, i++, paddr++) {
 			rqd->ppa_list[i] = addr_to_gen_ppa(pblk, paddr, id);
-			WARN_ON(!test_and_set_bit(paddr, meta_line->rail_bitmap));
+			if (geo->rail_stride_width)
+				WARN_ON(!test_and_set_bit(paddr,
+						     meta_line->rail_bitmap));
 		}
 	}
 
