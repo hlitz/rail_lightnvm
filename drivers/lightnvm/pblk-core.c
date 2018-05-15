@@ -758,6 +758,7 @@ static int pblk_line_submit_smeta_io(struct pblk *pblk, struct pblk_line *line,
 				     u64 paddr, int dir)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct bio *bio;
 	struct nvm_rq rqd;
@@ -811,7 +812,9 @@ static int pblk_line_submit_smeta_io(struct pblk *pblk, struct pblk_line *line,
 			__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
 
 			meta_list[i].lba = lba_list[paddr] = addr_empty;
-			set_bit(paddr, line->rail_bitmap);
+			if (geo->rail_stride_width)
+				WARN_ON(test_and_set_bit(paddr,
+							 line->rail_bitmap));
 		}
 	}
 
