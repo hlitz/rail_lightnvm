@@ -119,6 +119,37 @@ struct pblk_g_ctx {
 	u64 lba;
 };
 
+/* partial read context */
+struct pblk_pr_ctx {
+	/* Save & Restore variables */
+	struct bio *orig_bio;
+	unsigned long bitmap;
+	unsigned int orig_nr_secs;
+	unsigned int bio_init_idx;
+	void *ppa_ptr;
+	dma_addr_t dma_ppa_list;
+        struct nvm_rq *rqd;
+	/* JAVIER: Needed for chaining requests. Only needed for RAIL enabled.
+	   We can have the scenario of a request being served by a 
+	   partial read and a RAIL read, both asyncronous. We need
+	   to only complete the orig bio if both rqds complete. 
+	   Unfortunately the pblk_pr_ctx pointed to by the kref
+	   needs to provide pointers to pblk and rqd. The chained_pr_ctx
+	   is used by a RAIL read to decrement the kref of the associated 
+	   pblk_pr_ctx. Strictly speaking only the  */
+	union {
+		struct pr{
+			struct pblk *pblk;
+			struct kref ref;
+		} pr;
+
+		struct rail{
+			unsigned char pvalid[PBLK_MAX_REQ_ADDRS];
+			struct pblk_pr_ctx *chained_ctx;
+		} rail;
+	};
+};
+
 /* Pad context */
 struct pblk_pad_rq {
 	struct pblk *pblk;
