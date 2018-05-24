@@ -466,36 +466,55 @@ void pblk_rail_track_sec(struct pblk *pblk, struct pblk_line *line, int cur_sec,
 /* Read Path */
 static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 {
+	struct nvm_rq *orig_rqd; 
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
+	struct pblk_pr_ctx *pr_ctx = r_ctx->private;
+	struct pblk_pr_ctx *chained_ctx = pr_ctx->rail.chained_ctx;
 	struct bio *rail_bio = rqd->bio;
-	struct bio *orig_bio = r_ctx->private;
-	struct pblk_sec_meta *meta_list = rqd->meta_list;
+	struct bio *orig_bio;
+	struct pblk_sec_meta *meta_list;
 	struct bio_vec src_bv, dst_bv;
 	__le64 *lba_list_mem, *lba_list_media;
 	void *src_p, *dst_p;
 	int i, hole, n_idx = 0;
 	int orig_ppa = 0;
-	__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
-
+	int bio_init_idx;
+	int nr_secs = pr_ctx->orig_nr_secs;
+	
+	if (chained_ctx) {
+		orig_rqd = chained_ctx->rqd;
+		orig_bio = chained_ctx->orig_bio;
+		bio_init_idx = chained_ctx->bio_init_idx;
+	}
+	else {
+		orig_rqd = rqd;
+		orig_bio = pr_ctx->orig_bio;
+		bio_init_idx = pr_ctx->bio_init_idx;
+	}
+	
+	meta_list = orig_rqd->meta_list;
+	
 	if (unlikely(rqd->nr_ppas == 1)) {
 		struct ppa_addr ppa;
 
 		ppa = rqd->ppa_addr;
-		rqd->ppa_list = r_ctx->ppa_ptr;
-		rqd->dma_ppa_list = r_ctx->dma_ppa_list;
+		rqd->ppa_list = pr_ctx->ppa_ptr;
+		rqd->dma_ppa_list = pr_ctx->dma_ppa_list;
 		rqd->ppa_list[0] = ppa;
 	}
 
 	/* Re-use allocated memory for intermediate lbas */
-	lba_list_mem = (((void *)rqd->ppa_list) + pblk_dma_ppa_size);
+	lba_list_mem = (((void *)orig_rqd->ppa_list) + pblk_dma_ppa_size);
 	lba_list_media = (((void *)rqd->ppa_list) + 2 * pblk_dma_ppa_size);
-	for (i = 0; i < rqd->nr_ppas; i++)
-		lba_list_media[i] = meta_list[i].lba;
-	for (i = 0; i < r_ctx->nr_orig_secs; i++)
+
+ 	for (i = 0; i < rqd->nr_ppas; i++)
+		lba_list_media[i] = ((struct pblk_sec_meta *)rqd->meta_list)[i].lba;
+
+	for (i = 0; i < nr_secs; i++)
 		meta_list[i].lba = lba_list_mem[i];
 
 	i = 0;
-	hole = find_first_bit(&r_ctx->bitmap, PBLK_MAX_REQ_ADDRS);
+	hole = find_first_bit(&pr_ctx->bitmap, nr_secs);
 	do {
 		int line_id = pblk_ppa_to_line(rqd->ppa_list[orig_ppa]);
 		struct pblk_line *line = &pblk->lines[line_id];
@@ -504,18 +523,17 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 		kref_put(&line->ref, pblk_line_put_wq);
 
 		meta_list[hole].lba = 0;
-		orig_ppa += r_ctx->pvalid[i];
+		orig_ppa += pr_ctx->rail.pvalid[i];
 
-		dst_bv = orig_bio->bi_io_vec[r_ctx->bio_init_idx + hole];
+		dst_bv = orig_bio->bi_io_vec[bio_init_idx + hole];
 		dst_p = kmap_atomic(dst_bv.bv_page);
 
 		memset(dst_p + dst_bv.bv_offset, 0, PBLK_EXPOSED_PAGE_SIZE);
 		WARN_ON(dst_bv.bv_offset);
-		for (r = 0; r < r_ctx->pvalid[i]; r++) {
+		for (r = 0; r < pr_ctx->rail.pvalid[i]; r++) {
 			src_bv = rail_bio->bi_io_vec[n_idx];
 			src_p = kmap_atomic(src_bv.bv_page);
 
-			WARN_ON(lba_list_media[n_idx] == addr_empty);
 			pblk_rail_data_parity(dst_p + dst_bv.bv_offset,
 					      src_p + src_bv.bv_offset);
 			pblk_rail_lba_parity(&meta_list[hole].lba,
@@ -528,17 +546,26 @@ static void __pblk_rail_end_io_read(struct pblk *pblk, struct nvm_rq *rqd)
 
 		kunmap_atomic(dst_p);
 		i++;
-		hole = find_next_bit(&r_ctx->bitmap, PBLK_MAX_REQ_ADDRS,
+		hole = find_next_bit(&pr_ctx->bitmap, PBLK_MAX_REQ_ADDRS,
 					  hole + 1);
-	} while (i < r_ctx->nr_orig_secs_as_rail);
+	} while (hole < nr_secs);
 
 	bio_put(rail_bio);
 	r_ctx->private = NULL;
-	bio_endio(orig_bio);
-	rqd->bio = orig_bio;
-	rqd->nr_ppas = r_ctx->nr_orig_secs;
 
-	return __pblk_end_io_read(pblk, rqd, false);
+	/* If this rqd is chained, end original bio as part of the partial read */
+	if (pr_ctx->rail.chained_ctx) {
+		kref_put(&pr_ctx->rail.chained_ctx->pr.ref, pblk_read_put_pr_ctx);
+		pblk_free_rqd(pblk, rqd, PBLK_READ);
+	}
+	else {
+		rqd->bio = orig_bio;
+		rqd->nr_ppas = pr_ctx->orig_nr_secs;
+		bio_endio(rqd->bio);
+		__pblk_end_io_read(pblk, rqd, false);
+	}	
+
+	kfree(pr_ctx);
 }
 
 static void pblk_rail_end_io_read(struct nvm_rq *rqd)
@@ -560,6 +587,8 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 	unsigned int i;
 	int ppas = 0;
 
+	*pvalid = 0;
+	
 	for (i = 1; i < geo->rail_stride_width; i++) {
 		unsigned int neighbor, lun, chnl;
 
@@ -589,7 +618,7 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 			printk(KERN_EMERG "hmm shoudl nt this be caught\n");
 			continue;
 		}
-
+		
 		rail_ppas[ppas++] = ppa;
 		(*pvalid)++; /* Valid (non-bb/meta) reads in stride */
 	}
@@ -598,22 +627,21 @@ int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 	return *pvalid > 0;
 }
 
-int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
+/*
+int pblk_rail_read_bio_BAK(struct pblk *pblk, struct nvm_rq *rqd,
 		       unsigned int bio_init_idx, unsigned long *read_bitmap,
-		       struct ppa_addr *rail_ppa_list, unsigned char *pvalid)
+		       struct ppa_addr *rail_ppa_list, unsigned char *pvalid,
+		       struct pblk_pr_ctx *chained_ctx)
 {
 	struct bio *new_bio, *bio = rqd->bio;
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
 	int nr_orig_secs_as_rail = bitmap_weight(read_bitmap, PBLK_MAX_REQ_ADDRS);
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
+	struct pblk_pr_rail_ctx *pr_ctx;
+	int nr_secs = rqd->nr_ppas;
 	unsigned char nr_holes = 0;
 	__le64 *lba_list_mem;
 	int i, ret;
-
-	/* Re-use allocated memory for intermediate lbas */
-	lba_list_mem = (((void *)rqd->ppa_list) + pblk_dma_ppa_size);
-	for (i = 0; i < r_ctx->nr_orig_secs; i++)
-		lba_list_mem[i] = meta_list[i].lba;
 
 	for (i = 0; i < nr_orig_secs_as_rail; i++)
 		nr_holes += pvalid[i];
@@ -625,28 +653,45 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 
 	if (nr_holes != new_bio->bi_vcnt) {
 		pr_err("pblk: malformed bio\n");
-		goto err_pages;
+		goto err;
 	}
 
-	new_bio->bi_iter.bi_sector = 0; /* internal bio */
+	pr_ctx = kmalloc(sizeof(struct pblk_pr_rail_ctx), GFP_KERNEL);
+	if (!pr_ctx)
+		goto err;
+	
+
+	lba_list_mem = (((void *)rqd->ppa_list) + pblk_dma_ppa_size);
+	for (i = 0; i < nr_secs; i++)
+		lba_list_mem[i] = meta_list[i].lba;
+
+	new_bio->bi_iter.bi_sector = 0;
 	bio_set_op_attrs(new_bio, REQ_OP_READ, 0);
 
 	rqd->bio = new_bio;
 	rqd->nr_ppas = nr_holes;
 	rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_RANDOM);
 	rqd->end_io = pblk_rail_end_io_read;
-	rqd->private = pblk;
+
+	pr_ctx->ppa_ptr = NULL;
+	pr_ctx->orig_bio = bio;
+	pr_ctx->bitmap = *read_bitmap;
+	pr_ctx->bio_init_idx = bio_init_idx;
+	pr_ctx->orig_nr_secs = nr_secs;
+	pr_ctx->chained_ctx = chained_ctx;
+	memcpy(pr_ctx->pvalid, pvalid, PBLK_MAX_REQ_ADDRS);
+		
+	r_ctx->private = pr_ctx;
 
 	memcpy(rqd->ppa_list, rail_ppa_list, sizeof(struct ppa_addr) * nr_holes);
-	r_ctx->ppa_ptr = NULL;
 
 	if (unlikely(nr_holes == 1)) {
-		r_ctx->ppa_ptr = rqd->ppa_list;
-		r_ctx->dma_ppa_list = rqd->dma_ppa_list;
+		pr_ctx->ppa_ptr = rqd->ppa_list;
+		pr_ctx->dma_ppa_list = rqd->dma_ppa_list;
 		rqd->ppa_addr = rqd->ppa_list[0];
 	}
+}
 
-	WARN_ON(rqd->nr_ppas < 1 || rqd->nr_ppas > 64);
 	ret = pblk_submit_read_io(pblk, rqd);
 	if (ret) {
 		bio_put(rqd->bio);
@@ -662,6 +707,118 @@ err:
 	bio_put(new_bio);
 
 	return NVM_IO_ERR;
+}
+*/
+
+ int pblk_submit_rail_read(struct pblk *pblk, struct nvm_rq *rqd,
+		       unsigned char *pvalid, struct ppa_addr *rail_ppa_list,
+		       struct pblk_pr_ctx *chained_ctx)
+{
+	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
+	struct pblk_pr_ctx *pr_ctx = r_ctx->private;
+	int ret;
+
+	pr_ctx->rail.chained_ctx = chained_ctx;
+	memcpy(pr_ctx->rail.pvalid, pvalid, PBLK_MAX_REQ_ADDRS);
+	
+	memcpy(rqd->ppa_list, rail_ppa_list, sizeof(struct ppa_addr) * rqd->nr_ppas);
+	rqd->end_io = pblk_rail_end_io_read;
+	
+	ret = pblk_submit_read_io(pblk, rqd);
+	if (ret) {
+		bio_put(rqd->bio);
+		pr_err("pblk: partial read IO submission failed\n");
+		goto err;
+	}
+
+	return NVM_IO_OK;
+
+err:
+	pr_err("pblk: failed to perform partial read\n");
+
+	/* Free allocated pages in new bio */
+	pblk_bio_free_pages(pblk, rqd->bio, 0, rqd->bio->bi_vcnt);
+	__pblk_end_io_read(pblk, rqd, false);
+	return NVM_IO_ERR;
+}
+
+int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
+		       unsigned char *pvalid, struct ppa_addr *rail_ppa_list,
+		       struct pblk_pr_ctx *chained_ctx, int bio_init_idx,
+		       unsigned long *rail_bitmap)
+{
+	int ret;
+	int i, nr_holes = 0;
+	int secs_as_rail = bitmap_weight(rail_bitmap,
+					 PBLK_MAX_REQ_ADDRS);
+
+	for (i = 0; i < secs_as_rail; i++)
+		nr_holes += pvalid[i];
+
+	if (nr_holes > 1) {
+		rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;
+		rqd->dma_ppa_list = rqd->dma_meta_list + pblk_dma_meta_size;
+	}
+
+	ret = pblk_setup_partial_read(pblk, rqd, bio_init_idx,
+				      rail_bitmap, nr_holes);
+
+	ret = pblk_submit_rail_read(pblk, rqd, pvalid,
+				    rail_ppa_list, chained_ctx);
+
+	return ret;
+}
+
+void __pblk_nvm_prq_clone(struct nvm_rq *clone, struct nvm_rq *rqd)
+{
+	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
+	struct pblk_g_ctx *cloned_r_ctx = nvm_rq_to_pdu(clone);
+
+	clone->dev = rqd->dev;
+	clone->bio = rqd->bio;
+	clone->ppa_addr = rqd->ppa_addr;
+	clone->ppa_list = rqd->ppa_list;
+	clone->end_io = rqd->end_io;
+	clone->opcode = rqd->opcode;
+	clone->nr_ppas = rqd->nr_ppas;
+	clone->flags = rqd->flags;
+	clone->ppa_status = rqd->ppa_status;
+	clone->error = rqd->error;
+	clone->private = rqd->private;
+
+	cloned_r_ctx->private = r_ctx->private;
+	cloned_r_ctx->start_time = r_ctx->start_time;
+	cloned_r_ctx->lba = r_ctx->lba;
+
+	if (r_ctx->private) {
+		struct pblk_pr_ctx *pr_ctx = r_ctx->private;
+
+		clone->bio = pr_ctx->orig_bio;
+		clone->nr_ppas = pr_ctx->orig_nr_secs;
+	}
+}
+
+struct nvm_rq *pblk_nvm_prq_clone(struct pblk *pblk, struct nvm_rq *rqd,
+				  int type, gfp_t gfp_mask)
+{
+	struct nvm_rq *cloned_rqd;
+	struct nvm_tgt_dev *dev = pblk->dev;
+
+	cloned_rqd = pblk_alloc_rqd(pblk, type);
+
+	cloned_rqd->meta_list = nvm_dev_dma_alloc(dev->parent, gfp_mask,
+						  &cloned_rqd->dma_meta_list);
+	if (!cloned_rqd->meta_list) {
+		pr_err("pblk: not able to allocate ppa list\n");
+		goto fail_rqd_free;
+	}
+	
+	__pblk_nvm_prq_clone(cloned_rqd, rqd);	
+	return cloned_rqd;
+
+fail_rqd_free:
+	pblk_free_rqd(pblk, cloned_rqd, PBLK_READ);
+	return NULL;
 }
 
 /* Per stripe semaphore, enforces one writer per stripe */

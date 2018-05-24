@@ -118,13 +118,11 @@ struct pblk_rail {
 	unsigned long rail_reads;
 	unsigned long *busy_bitmap;     /* LUNs currently serving a write/erase */
 	u64 *lba;                       /* parity LBA buffer */
-
 };
 
 /* write buffer completion context */
 struct pblk_c_ctx {
 	struct list_head list;		/* Head for out-of-order completion */
-
 	unsigned long *lun_bitmap;	/* Luns used on current request */
 	unsigned int sentry;
 	unsigned int nr_valid;
@@ -137,13 +135,37 @@ struct pblk_g_ctx {
 	void *private;
 	unsigned long start_time;
 	u64 lba;
+};
+
+/* partial read context */
+struct pblk_pr_ctx {
+	/* Save & Restore variables */
+	struct bio *orig_bio;
 	unsigned long bitmap;
-	unsigned int nr_orig_secs;
-	unsigned int nr_orig_secs_as_rail;
-	unsigned char pvalid[PBLK_MAX_REQ_ADDRS];
+	unsigned int orig_nr_secs;
 	unsigned int bio_init_idx;
 	void *ppa_ptr;
 	dma_addr_t dma_ppa_list;
+	/* Needed for chaining requests. Only needed for RAIL enabled.
+	   We can have the scenario of a request being served by a 
+	   partial read and a RAIL read, both asyncronous. We need
+	   to only complete the orig bio if both rqds complete. 
+	   Unfortunately the pblk_pr_ctx pointed to by the kref
+	   needs to provide pointers to pblk and rqd. The chained_pr_ctx
+	   is used by a RAIL read to decrement the kref of the associated 
+	   pblk_pr_ctx. Strictly speaking only the  */
+	struct nvm_rq *rqd;
+	union {
+		struct pr{
+			struct pblk *pblk;
+			struct kref ref;
+		} pr;
+
+		struct rail{
+			unsigned char pvalid[PBLK_MAX_REQ_ADDRS];
+			struct pblk_pr_ctx *chained_ctx;
+		} rail;
+	};
 };
 
 /* Pad context */
@@ -884,6 +906,11 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq);
 void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 			bool put_line);
 void pblk_read_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd);
+void pblk_read_put_pr_ctx(struct kref *ref);
+int pblk_setup_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
+				   unsigned int bio_init_idx,
+				   unsigned long *read_bitmap,
+				   int nr_holes);
 
 /*
  * pblk recovery
@@ -1393,10 +1420,26 @@ int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa);
 int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 			 struct ppa_addr *rail_ppas, unsigned char *pvalid);
 int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
+		       unsigned char *pvalid, struct ppa_addr *rail_ppa_list,
+		       struct pblk_pr_ctx *chained_ctx, int bio_init_idx,
+		       unsigned long *rail_bitmap);
+/*
+int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
+		       unsigned int bio_init_idx, unsigned long *read_bitmap,
+		       struct ppa_addr *rail_ppa_list, unsigned char *pvalid,
+		       struct pblk_pr_ctx *chained_pr_ctx);*/
+int pblk_rail_read_bio2(struct pblk *pblk, struct nvm_rq *rqd,
 		       unsigned int bio_init_idx, unsigned long *read_bitmap,
 		       struct ppa_addr *rail_ppa_list, unsigned char *pvalid);
 void pblk_rail_down_stripe(struct pblk *pblk, int lun);
 void pblk_rail_notify_reader_down(struct pblk *pblk, int lun);
 void pblk_rail_notify_reader_up(struct pblk *pblk, int lun);
+
+struct nvm_rq *pblk_nvm_prq_clone(struct pblk *pblk, struct nvm_rq *rqd, int type,
+				  gfp_t gfp_mask);
+
+ int pblk_submit_rail_read(struct pblk *pblk, struct nvm_rq *rqd,
+		       unsigned char *pvalid, struct ppa_addr *rail_ppa_list,
+			   struct pblk_pr_ctx *chained_ctx);
 
 #endif /* PBLK_H_ */
