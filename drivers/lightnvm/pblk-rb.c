@@ -619,7 +619,7 @@ try:
 	}
 
 	if (pad) {
-		if (pblk_bio_add_pages(pblk, bio, GFP_KERNEL, pad, true)) {
+		if (pblk_bio_add_pages(pblk, bio, GFP_KERNEL, pad)) {
 			pr_err("pblk: could not pad page in write bio\n");
 			return NVM_IO_ERR;
 		}

@@ -38,7 +38,7 @@ static int pblk_read_from_cache(struct pblk *pblk, struct bio *bio,
 						bio_iter, advanced_bio);
 }
 
-static int pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
+static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
 				 sector_t blba, unsigned long *read_bitmap,
 				 struct ppa_addr *rail_ppa_list,
 				 unsigned long *rail_bitmap,
@@ -90,13 +90,12 @@ retry:
 			atomic_long_inc(&pblk->cache_reads);
 #endif
 		} else if (pblk_rail_lun_busy(pblk, p) &&
-			   nr_rail_ppas + geo->rail_stride_width - 1 <= 64 &&
+			   nr_rail_ppas + geo->rail_stride_width <=
+			   PBLK_MAX_REQ_ADDRS &&
 			   pblk_rail_setup_ppas(pblk, p,
 						&rail_ppa_list[nr_rail_ppas],
 						&pvalid[rail_valid])) {
-			/* RAIL is best effort, perform normal reads in case of
-			 * >64 RAIL ppas
-			 */
+			/* Perform up to PBLK_MAX_REQ_ADDRS RAIL reads */
 			nr_rail_ppas += pvalid[rail_valid];
 			rail_valid++;
 			WARN_ON(test_and_set_bit(i, rail_bitmap));
@@ -123,7 +122,6 @@ next:
 #ifdef CONFIG_NVM_DEBUG
 	atomic_long_add(nr_secs, &pblk->inflight_reads);
 #endif
-	return nr_rail_ppas;
 }
 
 int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd)
@@ -322,7 +320,7 @@ int pblk_setup_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
 
 	new_bio = bio_alloc(GFP_KERNEL, nr_holes);
 
-	if (pblk_bio_add_pages(pblk, new_bio, GFP_KERNEL, nr_holes, false))
+	if (pblk_bio_add_pages(pblk, new_bio, GFP_KERNEL, nr_holes))
 		goto fail;
 
 	if (nr_holes != new_bio->bi_vcnt) {
@@ -401,16 +399,15 @@ err:
 	return NVM_IO_ERR;
 }
 
-static int pblk_read_rq(struct pblk *pblk, struct nvm_rq *rqd,
-                        sector_t lba, unsigned long *read_bitmap,
-                        struct ppa_addr *rail_ppa_list,
-                        unsigned long *rail_bitmap,
-                        unsigned char *pvalid)
+static void pblk_read_rq(struct pblk *pblk, struct nvm_rq *rqd,
+			 sector_t lba, unsigned long *read_bitmap,
+			 struct ppa_addr *rail_ppa_list,
+			 unsigned long *rail_bitmap,
+			 unsigned char *pvalid)
 {
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
 	struct bio *bio = rqd->bio;
 	struct ppa_addr ppa;
-	int nr_rail_ppas = 0;
 
 	pblk_lookup_l2p_seq(pblk, &ppa, lba, 1);
 
@@ -422,7 +419,7 @@ retry:
 	if (pblk_ppa_empty(ppa)) {
 		WARN_ON(test_and_set_bit(0, read_bitmap));
 		meta_list[0].lba = cpu_to_le64(ADDR_EMPTY);
-		return 0;
+		return;
 	}
 
 	/* Try to read from write buffer. The address is later checked on the
@@ -444,14 +441,11 @@ retry:
 		   pblk_rail_setup_ppas(pblk, ppa, &rail_ppa_list[0],
 					&pvalid[0])) {
 		WARN_ON(test_and_set_bit(0, rail_bitmap));
-		nr_rail_ppas += pvalid[0];
 	} else {
 		rqd->ppa_addr = ppa;
 	}
 
 	rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_RANDOM);
-
-	return nr_rail_ppas;
 }
 
 int pblk_submit_read(struct pblk *pblk, struct bio *bio)
@@ -467,7 +461,6 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	int ret = NVM_IO_ERR;
 	unsigned long rail_bitmap;
 	struct ppa_addr rail_ppa_list[PBLK_MAX_REQ_ADDRS];
-	int nr_rail_ppas;
 	char rail_pvalid[PBLK_MAX_REQ_ADDRS];
 	bool do_partial_read = false;
 
@@ -511,14 +504,11 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;
 		rqd->dma_ppa_list = rqd->dma_meta_list + pblk_dma_meta_size;
 
-		nr_rail_ppas = pblk_read_ppalist_rq(pblk, rqd, blba,
-						    &read_bitmap, rail_ppa_list,
-						    &rail_bitmap, rail_pvalid
-			);
+		pblk_read_ppalist_rq(pblk, rqd, blba, &read_bitmap,
+				     rail_ppa_list, &rail_bitmap, rail_pvalid);
 	} else {
-		nr_rail_ppas = pblk_read_rq(pblk, rqd, blba, &read_bitmap,
-					    rail_ppa_list, &rail_bitmap,
-					    rail_pvalid);
+		pblk_read_rq(pblk, rqd, blba, &read_bitmap, rail_ppa_list,
+			     &rail_bitmap, rail_pvalid);
 	}
 
 	bio_get(bio);

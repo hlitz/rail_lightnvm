@@ -104,14 +104,8 @@ enum {
 #define pblk_dma_meta_size (sizeof(struct pblk_sec_meta) * PBLK_MAX_REQ_ADDRS)
 #define pblk_dma_ppa_size (sizeof(u64) * PBLK_MAX_REQ_ADDRS)
 
-/* RAIL data structures */
-struct p2b_entry {
-	unsigned int pos;               /* Position in the ring buffer */
-	unsigned char nr_valid;         /* Non-padded (flush), valid sectors */
-};
-
 struct pblk_rail {
-	struct p2b_entry **p2b;         /* Maps RAIL sectors to rb pos */
+	int **p2b;         /* Maps RAIL sectors to rb pos */
 	struct page *pages;             /* Pages to hold parity writes */
 	void **data;                    /* Data of parity pages */
 	unsigned long reads;
@@ -851,7 +845,7 @@ void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 		unsigned long *lun_bitmap);
 void pblk_end_io_sync(struct nvm_rq *rqd);
 int pblk_bio_add_pages(struct pblk *pblk, struct bio *bio, gfp_t flags,
-		       int nr_pages, bool zero);
+		       int nr_pages);
 void pblk_bio_free_pages(struct pblk *pblk, struct bio *bio, int off,
 			 int nr_pages);
 void pblk_map_invalidate(struct pblk *pblk, struct ppa_addr ppa);
@@ -1408,7 +1402,7 @@ static inline void pblk_setup_uuid(struct pblk *pblk)
 int pblk_rail_init(struct pblk *pblk);
 void pblk_rail_tear_down(struct pblk *pblk);
 void pblk_rail_track_sec(struct pblk *pblk, struct pblk_line *line, int cur_sec, 
-			 int nr_valid, int sentry, bool parity, bool meta);
+			 int sentry, bool parity, bool meta);
 int pblk_rail_sched_parity(struct pblk *pblk);
 int pblk_rail_submit_write(struct pblk *pblk);
 void pblk_rail_end_parity_write(struct pblk *pblk, struct nvm_rq *rqd,

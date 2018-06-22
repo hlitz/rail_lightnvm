@@ -242,7 +242,7 @@ void pblk_bio_free_pages(struct pblk *pblk, struct bio *bio, int off,
 }
 
 int pblk_bio_add_pages(struct pblk *pblk, struct bio *bio, gfp_t flags,
-		       int nr_pages, bool zero)
+		       int nr_pages)
 {
 	struct request_queue *q = pblk->dev->q;
 	struct page *page;
@@ -257,14 +257,6 @@ int pblk_bio_add_pages(struct pblk *pblk, struct bio *bio, gfp_t flags,
 			mempool_free(page, pblk->page_bio_pool);
 			goto err;
 		}
-
-		if (zero) {
-			void * addr;
-
-			addr = kmap_atomic(page);
-			memset(addr, 0, PBLK_EXPOSED_PAGE_SIZE);
-			kunmap_atomic(addr);
-               }
 	}
 
 	return 0;
@@ -549,8 +541,8 @@ u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs,
 	for (i = 0; i < nr_secs; i += pblk->min_write_pgs) {
 		int e;
 
-		pblk_rail_track_sec(pblk, line, line->cur_sec, nr_valid,
-				    sentry + i, parity_write, meta_write);
+		pblk_rail_track_sec(pblk, line, line->cur_sec, sentry + i,
+				    parity_write, meta_write);
 
 		for (e = 0; e < pblk->min_write_pgs; e++, line->cur_sec++)
 			WARN_ON(test_and_set_bit(line->cur_sec,

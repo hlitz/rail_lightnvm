@@ -210,8 +210,7 @@ int pblk_rail_init(struct pblk *pblk)
 	nr_strides = pblk_rail_dsec_per_stripe(pblk) /
 		(geo->rail_stride_width - 1);
 
-	pblk->rail.p2b = kmalloc(nr_strides * sizeof(struct p2b_entry *),
-				    GFP_KERNEL);
+	pblk->rail.p2b = kmalloc(nr_strides * sizeof(int *), GFP_KERNEL);
 	if (!pblk->rail.p2b)
 		return -ENOMEM;
 
@@ -219,15 +218,12 @@ int pblk_rail_init(struct pblk *pblk)
 		int e;
 
 		pblk->rail.p2b[p2be] = kmalloc((geo->rail_stride_width - 1) *
-					       sizeof(struct p2b_entry),
-					       GFP_KERNEL);
+					       sizeof(int), GFP_KERNEL);
 		if (!pblk->rail.p2b[p2be])
 			goto free_p2b_entries;
 
-		for (e = 0; e < geo->rail_stride_width - 1; e++) {
-			pblk->rail.p2b[p2be][e].pos = PBLK_RAIL_EMPTY;
-			pblk->rail.p2b[p2be][e].nr_valid = ~0x0;
-		}
+		for (e = 0; e < geo->rail_stride_width - 1; e++)
+			pblk->rail.p2b[p2be][e] = PBLK_RAIL_EMPTY;
 	}
 
 	pblk->rail.data = kmalloc(psecs * sizeof(void *), GFP_KERNEL);
@@ -368,7 +364,7 @@ int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 				u64 lba_src;
 				struct pblk_rb_entry *entry;
 
-				pos = pblk->rail.p2b[stride][i].pos;
+				pos = pblk->rail.p2b[stride][i];
 				pos = pblk_rb_wrap_pos(&pblk->rwb, pos + sec);
 				entry = &pblk->rwb.entries[pos];
 				w_ctx = &entry->w_ctx;
@@ -447,7 +443,7 @@ int pblk_rail_submit_write(struct pblk *pblk)
 }
 
 void pblk_rail_track_sec(struct pblk *pblk, struct pblk_line *line, int cur_sec,
-			 int nr_valid, int sentry, bool parity, bool meta)
+			 int sentry, bool parity, bool meta)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
@@ -459,8 +455,7 @@ void pblk_rail_track_sec(struct pblk *pblk, struct pblk_line *line, int cur_sec,
 	stride = pblk_rail_sec_to_stride(pblk, cur_sec);
 	idx = pblk_rail_sec_to_idx(pblk, cur_sec);
 	pos = pblk_rb_wrap_pos(&pblk->rwb, sentry);
-	pblk->rail.p2b[stride][idx].pos = pos;
-	pblk->rail.p2b[stride][idx].nr_valid = nr_valid;
+	pblk->rail.p2b[stride][idx] = pos;
 }
 
 /* Read Path */
