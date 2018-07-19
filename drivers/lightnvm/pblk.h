@@ -851,6 +851,7 @@ void pblk_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd);
 int pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
 			unsigned long flags);
 int pblk_write_gc_to_cache(struct pblk *pblk, struct pblk_gc_rq *gc_rq);
+void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd);
 
 /*
  * pblk map
@@ -869,6 +870,7 @@ int pblk_write_ts(void *data);
 void pblk_write_timer_fn(struct timer_list *t);
 void pblk_write_should_kick(struct pblk *pblk);
 void pblk_write_kick(struct pblk *pblk);
+int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd);
 
 /*
  * pblk read path
@@ -876,6 +878,12 @@ void pblk_write_kick(struct pblk *pblk);
 extern struct bio_set pblk_bio_set;
 int pblk_submit_read(struct pblk *pblk, struct bio *bio);
 int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq);
+void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
+			bool put_line);
+int pblk_setup_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
+			    unsigned int bio_init_idx,
+			    unsigned long *read_bitmap, int nr_holes);
+
 /*
  * pblk recovery
  */

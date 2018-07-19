@@ -231,8 +231,7 @@ static void pblk_submit_rec(struct work_struct *work)
 	atomic_dec(&pblk->inflight_io);
 }
 
-
-static void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
+void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	struct pblk_rec_ctx *recovery;
 
@@ -507,7 +506,7 @@ retry:
 	return meta_line;
 }
 
-static int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd)
+int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	struct ppa_addr erase_ppa;
 	struct pblk_line *meta_line;

@@ -175,8 +175,7 @@ static void pblk_end_user_read(struct bio *bio)
 	bio_endio(bio);
 }
 
-static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
-			       bool put_line)
+void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd, bool put_line)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
@@ -290,10 +289,9 @@ static void pblk_end_partial_read(struct nvm_rq *rqd)
 	__pblk_end_io_read(pblk, rqd, false);
 }
 
-static int pblk_setup_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
+int pblk_setup_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
 			    unsigned int bio_init_idx,
-			    unsigned long *read_bitmap,
-			    int nr_holes)
+			    unsigned long *read_bitmap, int nr_holes)
 {
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
