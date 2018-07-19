@@ -843,6 +843,7 @@ void pblk_lookup_l2p_rand(struct pblk *pblk, struct ppa_addr *ppas,
 			  u64 *lba_list, int nr_secs);
 void pblk_lookup_l2p_seq(struct pblk *pblk, struct ppa_addr *ppas,
 			 sector_t blba, int nr_secs);
+void pblk_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd);
 
 /*
  * pblk user I/O write path

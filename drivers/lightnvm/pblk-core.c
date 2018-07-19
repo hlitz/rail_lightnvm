@@ -2096,3 +2096,19 @@ void pblk_lookup_l2p_rand(struct pblk *pblk, struct ppa_addr *ppas,
 	}
 	spin_unlock(&pblk->trans_lock);
 }
+
+void pblk_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd)
+{
+	struct ppa_addr *ppa_list;
+	int i;
+
+	ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
+
+	for (i = 0; i < rqd->nr_ppas; i++) {
+		struct ppa_addr ppa = ppa_list[i];
+		struct pblk_line *line;
+
+		line = &pblk->lines[pblk_ppa_to_line(ppa)];
+		kref_put(&line->ref, pblk_line_put_wq);
+	}
+}
