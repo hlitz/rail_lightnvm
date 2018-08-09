@@ -56,6 +56,12 @@
 
 #define PBLK_DEFAULT_OP (11)
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+#define PBLK_RAIL_STRIDE_WIDTH 4
+#define PBLK_RAIL_PARITY_WRITE ((unsigned int)(1U << 30))
+#define PBLK_RAIL_MAX_STRIDES (PBLK_MAX_LUNS_BITMAP * 128 / PBLK_RAIL_STRIDE_WIDTH)
+#endif
+
 enum {
 	PBLK_READ		= READ,
 	PBLK_WRITE		= WRITE,/* Write from write buffer */
@@ -127,6 +133,22 @@ struct pblk_pr_ctx {
 	unsigned int bio_init_idx;
 	void *ppa_ptr;
 	dma_addr_t dma_ppa_list;
+#ifdef CONFIG_NVM_PBLK_RAIL
+	/* RAIL requires request chaining to split a regular read into mutually
+	   dependent asynchronous partial and an asynchronous RAIL reads */
+	struct nvm_rq *rqd;
+	union {
+		struct pr{
+			struct pblk *pblk;
+			struct kref ref;
+		} pr;
+
+		struct rail{
+			unsigned char pvalid[PBLK_MAX_REQ_ADDRS];
+			struct pblk_pr_ctx *chained_ctx;
+		} rail;
+	};
+#endif
 };
 
 /* Pad context */
@@ -152,6 +174,24 @@ struct pblk_w_ctx {
 	struct ppa_addr ppa;		/* Physic addr. associated with entry */
 	int flags;			/* Write context flags */
 };
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+struct p2b_entry {
+	int pos;
+	int nr_valid;
+};
+
+struct pblk_rail {
+	struct p2b_entry **p2b;         /* Maps RAIL sectors to rb pos */
+	struct page *pages;             /* Pages to hold parity writes */
+	void **data;                    /* Data for parity pages */
+	unsigned long reads;
+	unsigned long rail_reads;
+	unsigned long *busy_bitmap;     /* LUNs currently serving a write/erase */
+	u64 *lba;                       /* parity LBA buffer */
+	struct semaphore *stride_sem;   /* Per stride semaphore */
+};
+#endif
 
 struct pblk_rb_entry {
 	struct ppa_addr cacheline;	/* Cacheline for this entry */
@@ -701,6 +741,10 @@ struct pblk {
 	struct timer_list wtimer;
 
 	struct pblk_gc gc;
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	struct pblk_rail rail;
+#endif
 };
 
 struct pblk_line_ws {
@@ -1450,4 +1494,35 @@ static inline void pblk_setup_uuid(struct pblk *pblk)
 	uuid_le_gen(&uuid);
 	memcpy(pblk->instance_uuid, uuid.b, 16);
 }
+#ifdef CONFIG_NVM_PBLK_RAIL
+/* Initialize and tear down RAIL */
+int pblk_rail_init(struct pblk *pblk);
+void pblk_rail_free(struct pblk *pblk);
+/* Adjust some system parameters */
+void pblk_rail_adjust_capacity(struct pblk *pblk);
+bool pblk_rail_meta_distance(struct pblk_line *data_line);
+int pblk_rail_rb_delay(struct pblk_rb *rb);
+/* Core */
+void pblk_rail_line_close(struct pblk *pblk, struct pblk_line *line);
+void pblk_rail_track_sec(struct pblk *pblk, struct pblk_line *line, int cur_sec, 
+			 int sentry, int nr_valid);
+bool pblk_rail_valid_sector(struct pblk *pblk, struct pblk_line *line, int pos);
+int pblk_rail_down_stride(struct pblk *pblk, int lun, int timeout);
+void pblk_rail_up_stride(struct pblk *pblk, int lun);
+/* Write path */
+int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
+		       unsigned char *pvalid, struct ppa_addr *rail_ppa_list,
+		       struct pblk_pr_ctx *chained_ctx, int bio_init_idx,
+		       unsigned long *rail_bitmap, bool do_partial_read);
+void pblk_rail_end_io_write(struct nvm_rq *rqd);
+int pblk_rail_submit_write(struct pblk *pblk);
+/* Read Path */
+int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa);
+int pblk_rail_setup_read(struct pblk *pblk, struct nvm_rq *rqd, int blba,
+			 unsigned long *read_bitmap, int bio_init_idx,
+			 struct bio *bio, struct nvm_rq **rail_rqd);
+int pblk_rail_submit_read(struct pblk *pblk, struct nvm_rq *rqd,
+			  struct pblk_pr_ctx *chained_ctx);
+void pblk_read_put_pr_ctx(struct kref *ref);
+#endif /* CONFIG_NVM_PBLK_RAIL */
 #endif /* PBLK_H_ */
