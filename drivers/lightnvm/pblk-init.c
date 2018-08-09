@@ -695,6 +695,10 @@ static void pblk_set_provision(struct pblk *pblk, long nr_free_blks)
 
 	pblk->capacity = (provisioned - blk_meta) * geo->clba;
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	pblk_rail_adjust_capacity(pblk);
+#endif
+
 	atomic_set(&pblk->rl.free_blocks, nr_free_blks);
 	atomic_set(&pblk->rl.free_user_blocks, nr_free_blks);
 }
@@ -1058,10 +1062,20 @@ static int pblk_lines_init(struct pblk *pblk)
 	if (ret)
 		goto fail_free_meta;
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	ret = pblk_rail_init(pblk);
+	if (ret)
+		goto fail_free_luns;
+#endif
+
 	chunk_meta = pblk_chunk_get_meta(pblk);
 	if (IS_ERR(chunk_meta)) {
 		ret = PTR_ERR(chunk_meta);
+#ifdef CONFIG_NVM_PBLK_RAIL
+		goto fail_free_rail;
+#else
 		goto fail_free_luns;
+#endif
 	}
 
 	pblk->lines = kcalloc(l_mg->nr_lines, sizeof(struct pblk_line),
@@ -1097,6 +1111,12 @@ fail_free_lines:
 	kfree(pblk->lines);
 fail_free_chunk_meta:
 	kfree(chunk_meta);
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+fail_free_rail:
+	pblk_rail_free(pblk);
+#endif
+
 fail_free_luns:
 	kfree(pblk->luns);
 fail_free_meta:
@@ -1155,6 +1175,11 @@ static void pblk_tear_down(struct pblk *pblk, bool graceful)
 		__pblk_pipeline_flush(pblk);
 	__pblk_pipeline_stop(pblk);
 	pblk_writer_stop(pblk);
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	pblk_rail_free(pblk);
+#endif
+
 	pblk_rb_sync_l2p(&pblk->rwb);
 	pblk_rl_free(&pblk->rl);
 

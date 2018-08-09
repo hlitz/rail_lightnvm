@@ -389,8 +389,14 @@ static int __pblk_rb_may_write(struct pblk_rb *rb, unsigned int nr_entries,
 	sync = READ_ONCE(rb->sync);
 	mem = READ_ONCE(rb->mem);
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	if (pblk_rb_ring_space(rb, mem, sync, rb->nr_entries) <
+	    nr_entries + pblk_rail_rb_delay(rb))
+		return 0;
+#else
 	if (pblk_rb_ring_space(rb, mem, sync, rb->nr_entries) < nr_entries)
 		return 0;
+#endif
 
 	if (pblk_rb_update_l2p(rb, nr_entries, mem, sync))
 		return 0;

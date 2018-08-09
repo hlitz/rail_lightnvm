@@ -101,6 +101,13 @@ static void pblk_end_io_erase(struct nvm_rq *rqd)
 {
 	struct pblk *pblk = rqd->private;
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	if (rqd->nr_ppas == 1)
+		pblk_up_page(pblk, &rqd->ppa_addr, rqd->nr_ppas);
+	else
+		pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas);
+#endif
+
 	__pblk_end_io_erase(pblk, rqd);
 	mempool_free(rqd, &pblk->e_rq_pool);
 }
@@ -489,6 +496,7 @@ int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd)
 int pblk_submit_io_sync(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
+	int ret;
 
 	atomic_inc(&pblk->inflight_io);
 
@@ -497,7 +505,27 @@ int pblk_submit_io_sync(struct pblk *pblk, struct nvm_rq *rqd)
 		return NVM_IO_ERR;
 #endif
 
-	return nvm_submit_io_sync(dev, rqd);
+#ifdef CONFIG_NVM_PBLK_RAIL
+	if (rqd->opcode == NVM_OP_PWRITE || rqd->opcode == NVM_OP_ERASE) {
+		if (rqd->nr_ppas == 1)
+			pblk_down_page(pblk, &rqd->ppa_addr, rqd->nr_ppas);
+		else
+			pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas);
+	}
+#endif
+
+	ret = nvm_submit_io_sync(dev, rqd);
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	if (rqd->opcode == NVM_OP_PWRITE || rqd->opcode == NVM_OP_ERASE) {
+		if (rqd->nr_ppas == 1)
+			pblk_up_page(pblk, &rqd->ppa_addr, rqd->nr_ppas);
+		else
+			pblk_up_page(pblk, rqd->ppa_list, rqd->nr_ppas);
+	}
+#endif
+
+	return ret;
 }
 
 static void pblk_bio_map_addr_endio(struct bio *bio)
@@ -1690,6 +1718,13 @@ int pblk_blk_erase_async(struct pblk *pblk, struct ppa_addr ppa)
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
 	 */
+#ifdef CONFIG_NVM_PBLK_RAIL
+	if (rqd->nr_ppas == 1)
+		pblk_down_page(pblk, &rqd->ppa_addr, rqd->nr_ppas);
+	else
+		pblk_down_page(pblk, rqd->ppa_list, rqd->nr_ppas);
+#endif
+
 	err = pblk_submit_io(pblk, rqd);
 	if (err) {
 		struct nvm_tgt_dev *dev = pblk->dev;
@@ -1737,6 +1772,10 @@ void pblk_line_close(struct pblk *pblk, struct pblk_line *line)
 #ifdef CONFIG_NVM_PBLK_DEBUG
 	WARN(!bitmap_full(line->map_bitmap, lm->sec_per_line),
 				"pblk: corrupt closed line %d\n", line->id);
+#endif
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	pblk_rail_line_close(pblk, line);
 #endif
 
 	spin_lock(&l_mg->free_lock);
@@ -1872,7 +1911,12 @@ static void __pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list,
 				ppa_list[0].a.ch != ppa_list[i].a.ch);
 #endif
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	(void)rlun;
+	ret = pblk_rail_down_stride(pblk, pos, msecs_to_jiffies(30000));
+#else
 	ret = down_timeout(&rlun->wr_sem, msecs_to_jiffies(30000));
+#endif
 	if (ret == -ETIME || ret == -EINTR)
 		pblk_err(pblk, "taking lun semaphore timed out: err %d\n",
 				-ret);
@@ -1919,7 +1963,12 @@ void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)
 #endif
 
 	rlun = &pblk->luns[pos];
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	pblk_rail_up_stride(pblk, pos);
+#else
 	up(&rlun->wr_sem);
+#endif
 }
 
 void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
@@ -1933,7 +1982,13 @@ void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 
 	while ((bit = find_next_bit(lun_bitmap, num_lun, bit + 1)) < num_lun) {
 		rlun = &pblk->luns[bit];
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+		pblk_rail_up_stride(pblk, bit);
+#else
 		up(&rlun->wr_sem);
+#endif
+
 	}
 }
 

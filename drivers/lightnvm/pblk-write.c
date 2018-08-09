@@ -333,7 +333,16 @@ static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		return -ENOMEM;
 	c_ctx->lun_bitmap = lun_bitmap;
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	if (c_ctx->sentry & PBLK_RAIL_PARITY_WRITE)
+		ret = pblk_alloc_w_rq(pblk, rqd, nr_secs,
+				      pblk_rail_end_io_write);
+	else
+		ret = pblk_alloc_w_rq(pblk, rqd, nr_secs, pblk_end_io_write);
+#else
 	ret = pblk_alloc_w_rq(pblk, rqd, nr_secs, pblk_end_io_write);
+#endif
+
 	if (ret) {
 		kfree(lun_bitmap);
 		return ret;
@@ -475,6 +484,11 @@ static inline bool pblk_valid_meta_ppa(struct pblk *pblk,
 	if (test_bit(pos_opt, data_c_ctx->lun_bitmap) ||
 				test_bit(pos_opt, data_line->blk_bitmap))
 		return true;
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	if (unlikely(pblk_rail_meta_distance(data_line)))
+		data_line->meta_distance--;
+#endif
 
 	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)))
 		data_line->meta_distance--;
@@ -660,6 +674,11 @@ int pblk_write_ts(void *data)
 	struct pblk *pblk = data;
 
 	while (!kthread_should_stop()) {
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+		pblk_rail_submit_write(pblk);
+#endif
+
 		if (!pblk_submit_write(pblk))
 			continue;
 		set_current_state(TASK_INTERRUPTIBLE);

@@ -214,6 +214,22 @@ static void pblk_end_io_read(struct nvm_rq *rqd)
 	__pblk_end_io_read(pblk, rqd, true);
 }
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+void pblk_read_put_pr_ctx(struct kref *ref)
+{
+	struct pr *pr = container_of(ref, struct pr, ref);
+	struct pblk_pr_ctx *pr_ctx = container_of(pr, struct pblk_pr_ctx, pr);
+	struct nvm_rq *rqd = pr_ctx->rqd;
+	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
+
+	r_ctx->private = NULL;
+	bio_endio(rqd->bio);
+	rqd->bio = NULL;
+	__pblk_end_io_read(pr_ctx->pr.pblk, rqd, false);
+	kfree(pr_ctx);
+}
+#endif
+
 static void pblk_end_partial_read(struct nvm_rq *rqd)
 {
 	struct pblk *pblk = rqd->private;
@@ -279,14 +295,21 @@ static void pblk_end_partial_read(struct nvm_rq *rqd)
 	} while (hole < nr_secs);
 
 	bio_put(new_bio);
-	kfree(pr_ctx);
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	/* Complete the original bio and associated request */
+	rqd->bio = bio;
+	rqd->nr_ppas = nr_secs;
+	kref_put(&pr_ctx->pr.ref, pblk_read_put_pr_ctx);
+#else
+	kfree(pr_ctx);
 	/* restore original request */
 	rqd->bio = NULL;
 	rqd->nr_ppas = nr_secs;
 
 	bio_endio(bio);
 	__pblk_end_io_read(pblk, rqd, false);
+#endif
 }
 
 int pblk_setup_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
@@ -357,6 +380,11 @@ static int pblk_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	int nr_holes;
 	int ret;
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	struct pblk_g_ctx *r_ctx;
+	struct pblk_pr_ctx *pr_ctx;
+#endif
+
 	nr_holes = nr_secs - bitmap_weight(read_bitmap, nr_secs);
 
 	if (pblk_setup_partial_read(pblk, rqd, bio_init_idx, read_bitmap,
@@ -364,6 +392,16 @@ static int pblk_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 		return NVM_IO_ERR;
 
 	rqd->end_io = pblk_end_partial_read;
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	r_ctx = nvm_rq_to_pdu(rqd);
+	pr_ctx = r_ctx->private;
+	kref_init(&pr_ctx->pr.ref);
+	/* Increment kref for chained RAIL read */
+	kref_get(&pr_ctx->pr.ref);
+	pr_ctx->pr.pblk = pblk;
+	pr_ctx->rqd = rqd;
+#endif
 
 	ret = pblk_submit_io(pblk, rqd);
 	if (ret) {
@@ -436,6 +474,10 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	DECLARE_BITMAP(read_bitmap, NVM_MAX_VLBA);
 	int ret = NVM_IO_ERR;
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	struct nvm_rq *rail_rqd = NULL;
+#endif
+
 	/* logic error: lba out-of-bounds. Ignore read request */
 	if (blba >= pblk->rl.nr_secs || nr_secs > PBLK_MAX_REQ_ADDRS) {
 		WARN(1, "pblk: read lba out of bounds (lba:%llu, nr:%d)\n",
@@ -487,6 +529,12 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		return NVM_IO_DONE;
 	}
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	if (pblk_rail_setup_read(pblk, rqd, blba, read_bitmap, bio_init_idx,
+				 bio, &rail_rqd))
+		goto fail_rqd_free;
+#endif
+
 	/* All sectors are to be read from the device */
 	if (bitmap_empty(read_bitmap, rqd->nr_ppas)) {
 		struct bio *int_bio = NULL;
@@ -509,6 +557,17 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		return NVM_IO_OK;
 	}
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	/* All sectors are read from the cache and via RAIL reads */
+	if (bitmap_full(read_bitmap, nr_secs)) {
+		ret = pblk_rail_submit_read(pblk, rail_rqd, NULL);
+		if (ret)
+			goto fail_meta_free;
+
+		return NVM_IO_OK;
+	}
+#endif
+
 	/* The read bio request could be partially filled by the write buffer,
 	 * but there are some holes that need to be read from the drive.
 	 */
@@ -516,6 +575,23 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 				    nr_secs);
 	if (ret)
 		goto fail_meta_free;
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	/* The request is served with a chained partial and RAIL read */
+	if (rail_rqd) {
+		r_ctx = nvm_rq_to_pdu(rqd);
+
+		ret = pblk_rail_submit_read(pblk, rail_rqd, r_ctx->private);
+		if (ret)
+			goto fail_meta_free;
+	}
+	else {
+		struct pblk_pr_ctx *pr_ctx = r_ctx->private;
+
+		/* The request is served by a partial read and no RAIL */
+		kref_put(&pr_ctx->pr.ref, pblk_read_put_pr_ctx);
+	}
+#endif
 
 	return NVM_IO_OK;
 

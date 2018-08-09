@@ -65,6 +65,26 @@ static int pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 		 */
 		if (i < valid_secs) {
 			kref_get(&line->ref);
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+			WARN_ON(!pblk_rail_valid_sector(pblk, line, paddr));
+
+			if ((sentry & PBLK_RAIL_PARITY_WRITE) > 0) {
+				u64 *lba;
+				unsigned int slot;
+
+				slot = sentry & ~PBLK_RAIL_PARITY_WRITE;
+				lba = &pblk->rail.lba[slot + i];
+				meta_list[i].lba = cpu_to_le64(*lba);
+				lba_list[paddr] = cpu_to_le64(*lba);
+				line->nr_valid_lbas++;
+				continue;
+			}
+			if ((i % pblk->min_write_pgs) == 0)
+				pblk_rail_track_sec(pblk, line, paddr,
+						    sentry + i, valid_secs);
+#endif
+
 			w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry + i);
 			w_ctx->ppa = ppa_list[i];
 			meta_list[i].lba = cpu_to_le64(w_ctx->lba);
