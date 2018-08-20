@@ -431,8 +431,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	DECLARE_BITMAP(read_bitmap, NVM_MAX_VLBA);
 	int ret = NVM_IO_ERR;
 
-	generic_start_io_acct(q, REQ_OP_READ, bio_sectors(bio),
-			      &pblk->disk->part0);
+	generic_start_io_acct(q, READ, bio_sectors(bio), &pblk->disk->part0);
 
 	bitmap_zero(read_bitmap, nr_secs);
 
