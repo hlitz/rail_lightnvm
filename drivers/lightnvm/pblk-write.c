@@ -231,8 +231,7 @@ static void pblk_submit_rec(struct work_struct *work)
 	atomic_dec(&pblk->inflight_io);
 }
 
-
-static void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
+void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	struct pblk_rec_ctx *recovery;
 
@@ -318,7 +317,7 @@ static int pblk_alloc_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 }
 
 static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
-			   struct ppa_addr *erase_ppa)
+			   struct ppa_addr *erase_ppa, nvm_end_io_fn(*end_io))
 {
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct pblk_line *e_line = pblk_line_get_erase(pblk);
@@ -334,7 +333,8 @@ static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		return -ENOMEM;
 	c_ctx->lun_bitmap = lun_bitmap;
 
-	ret = pblk_alloc_w_rq(pblk, rqd, nr_secs, pblk_end_io_write);
+	ret = pblk_alloc_w_rq(pblk, rqd, nr_secs, end_io);
+
 	if (ret) {
 		kfree(lun_bitmap);
 		return ret;
@@ -477,6 +477,11 @@ static inline bool pblk_valid_meta_ppa(struct pblk *pblk,
 				test_bit(pos_opt, data_line->blk_bitmap))
 		return true;
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	if (unlikely(pblk_rail_meta_distance(data_line)))
+		data_line->meta_distance--;
+#endif
+
 	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)))
 		data_line->meta_distance--;
 
@@ -507,7 +512,8 @@ retry:
 	return meta_line;
 }
 
-static int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd)
+int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd,
+		       nvm_end_io_fn(*end_io))
 {
 	struct ppa_addr erase_ppa;
 	struct pblk_line *meta_line;
@@ -516,7 +522,7 @@ static int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd)
 	pblk_ppa_set_empty(&erase_ppa);
 
 	/* Assign lbas to ppas and populate request structure */
-	err = pblk_setup_w_rq(pblk, rqd, &erase_ppa);
+	err = pblk_setup_w_rq(pblk, rqd, &erase_ppa, end_io);
 	if (err) {
 		pblk_err(pblk, "could not setup write request: %d\n", err);
 		return NVM_IO_ERR;
@@ -576,6 +582,10 @@ static int pblk_submit_write(struct pblk *pblk)
 	unsigned int secs_to_flush;
 	unsigned long pos;
 	unsigned int resubmit;
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	pblk_rail_submit_write(pblk);
+#endif
 
 	spin_lock(&pblk->resubmit_lock);
 	resubmit = !list_empty(&pblk->resubmit_list);
@@ -638,7 +648,7 @@ static int pblk_submit_write(struct pblk *pblk)
 		goto fail_put_bio;
 	}
 
-	if (pblk_submit_io_set(pblk, rqd))
+	if (pblk_submit_io_set(pblk, rqd, pblk_end_io_write))
 		goto fail_free_bio;
 
 #ifdef CONFIG_NVM_PBLK_DEBUG

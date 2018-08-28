@@ -167,22 +167,6 @@ static void pblk_read_check_rand(struct pblk *pblk, struct nvm_rq *rqd,
 	WARN_ONCE(j != rqd->nr_ppas, "pblk: corrupted random request\n");
 }
 
-static void pblk_read_put_rqd_kref(struct pblk *pblk, struct nvm_rq *rqd)
-{
-	struct ppa_addr *ppa_list;
-	int i;
-
-	ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
-
-	for (i = 0; i < rqd->nr_ppas; i++) {
-		struct ppa_addr ppa = ppa_list[i];
-		struct pblk_line *line;
-
-		line = &pblk->lines[pblk_ppa_to_line(ppa)];
-		kref_put(&line->ref, pblk_line_put_wq);
-	}
-}
-
 static void pblk_end_user_read(struct bio *bio)
 {
 #ifdef CONFIG_NVM_PBLK_DEBUG
@@ -191,8 +175,7 @@ static void pblk_end_user_read(struct bio *bio)
 	bio_endio(bio);
 }
 
-static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
-			       bool put_line)
+void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd, bool put_line)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
@@ -210,7 +193,7 @@ static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 		bio_put(int_bio);
 
 	if (put_line)
-		pblk_read_put_rqd_kref(pblk, rqd);
+		pblk_put_rqd_kref(pblk, rqd);
 
 #ifdef CONFIG_NVM_PBLK_DEBUG
 	atomic_long_add(rqd->nr_ppas, &pblk->sync_reads);
@@ -296,8 +279,8 @@ static void pblk_end_partial_read(struct nvm_rq *rqd)
 	} while (hole < nr_secs);
 
 	bio_put(new_bio);
-	kfree(pr_ctx);
 
+	kfree(pr_ctx);
 	/* restore original request */
 	rqd->bio = NULL;
 	rqd->nr_ppas = nr_secs;
@@ -306,10 +289,9 @@ static void pblk_end_partial_read(struct nvm_rq *rqd)
 	__pblk_end_io_read(pblk, rqd, false);
 }
 
-static int pblk_setup_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
+int pblk_setup_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
 			    unsigned int bio_init_idx,
-			    unsigned long *read_bitmap,
-			    int nr_holes)
+			    unsigned long *read_bitmap, int nr_holes)
 {
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
@@ -504,6 +486,15 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		__pblk_end_io_read(pblk, rqd, false);
 		return NVM_IO_DONE;
 	}
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	ret = pblk_rail_setup_read(pblk, rqd, blba, read_bitmap, bio_init_idx,
+				   bio);
+	if (ret == NVM_IO_OK)
+		return ret;
+	if (ret == NVM_IO_ERR)
+		goto fail_end_io;
+#endif
 
 	/* All sectors are to be read from the device */
 	if (bitmap_empty(read_bitmap, rqd->nr_ppas)) {
