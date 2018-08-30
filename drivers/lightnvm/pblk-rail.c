@@ -621,7 +621,7 @@ static void pblk_rail_end_io_read(struct nvm_rq *rqd)
 	rqd->nr_ppas = pr_ctx->orig_nr_secs;
 	kfree(pr_ctx);
 	rqd->bio = NULL;
-	
+
 	bio_endio(bio);
 	__pblk_end_io_read(pblk, rqd, false);
 }
@@ -714,7 +714,7 @@ int pblk_rail_setup_read(struct pblk *pblk, struct nvm_rq *rqd, int blba,
 	int ret;
 
 	bitmap_zero(pvalid, NVM_MAX_VLBA);
-	
+
 	if (rqd->nr_ppas == 1) {
 		pblk_rail_set_bitmap(pblk, &rqd->ppa_addr, 0, rail_ppa_list, &nr_rail_ppas,
 				     read_bitmap, pvalid, &rail_reads);
@@ -750,7 +750,7 @@ int pblk_rail_setup_read(struct pblk *pblk, struct nvm_rq *rqd, int blba,
 	rqd->end_io = pblk_rail_end_io_read;
 	pr_ctx = r_ctx->private;
 	bitmap_copy(pr_ctx->bitmap, pvalid, NVM_MAX_VLBA);
-			       
+
 	ret = pblk_submit_io(pblk, rqd);
 	if (ret) {
 		bio_put(rqd->bio);
