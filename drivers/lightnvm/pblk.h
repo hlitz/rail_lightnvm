@@ -102,6 +102,13 @@ enum {
 #define pblk_dma_meta_size (sizeof(struct pblk_sec_meta) * PBLK_MAX_REQ_ADDRS)
 #define pblk_dma_ppa_size (sizeof(u64) * PBLK_MAX_REQ_ADDRS)
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+#define PBLK_RAIL_STRIDE_WIDTH 4
+#define PR_BITMAP_SIZE (NVM_MAX_VLBA * PBLK_RAIL_STRIDE_WIDTH)
+#else
+#define PR_BITMAP_SIZE NVM_MAX_VLBA
+#endif
+
 /* write buffer completion context */
 struct pblk_c_ctx {
 	struct list_head list;		/* Head for out-of-order completion */
@@ -122,7 +129,7 @@ struct pblk_g_ctx {
 /* partial read context */
 struct pblk_pr_ctx {
 	struct bio *orig_bio;
-	DECLARE_BITMAP(bitmap, NVM_MAX_VLBA);
+	DECLARE_BITMAP(bitmap, PR_BITMAP_SIZE);
 	unsigned int orig_nr_secs;
 	unsigned int bio_init_idx;
 	void *ppa_ptr;
@@ -617,7 +624,6 @@ struct pblk_rail {
 /* Initialize and tear down RAIL */
 int pblk_rail_init(struct pblk *pblk);
 void pblk_rail_free(struct pblk *pblk);
-void pblk_rail_bio_split(struct pblk *pblk, struct bio **bio);
 /* Map data and parity writes */
 int pblk_rail_map_page_data(struct pblk *pblk, unsigned int sentry,
 			    struct ppa_addr *ppa_list,
@@ -640,9 +646,9 @@ void pblk_rail_end_io_write(struct nvm_rq *rqd);
 int pblk_rail_submit_write(struct pblk *pblk);
 /* Read Path */
 int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa);
-int pblk_rail_setup_read(struct pblk *pblk, struct nvm_rq *rqd, int blba,
-			 unsigned long *read_bitmap, int bio_init_idx,
-			 struct bio *bio);
+int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd, int blba,
+		       unsigned long *read_bitmap, int bio_init_idx,
+		       struct bio **bio);
 void pblk_read_put_pr_ctx(struct kref *ref);
 #endif /* CONFIG_NVM_PBLK_RAIL */
 

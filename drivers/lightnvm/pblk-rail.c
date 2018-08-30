@@ -16,7 +16,6 @@
 #include "pblk.h"
 #include <linux/log2.h>
 
-#define PBLK_RAIL_STRIDE_WIDTH 4
 #define PBLK_RAIL_EMPTY ~0x0
 #define PBLK_RAIL_PARITY_WRITE 0x8000
 
@@ -248,24 +247,21 @@ void pblk_rail_free(struct pblk *pblk)
 	kfree(pblk->rail.p2b);
 }
 
-void pblk_rail_bio_split(struct pblk *pblk, struct bio **bio)
+static void pblk_rail_bio_split(struct pblk *pblk, struct bio **bio, int sec)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
-	int rail_max_sec = (dev->geo.csecs >> 9) * NVM_MAX_VLBA /
-		(PBLK_RAIL_STRIDE_WIDTH);
+	struct bio *split;
 
-	if(pblk_get_secs(*bio) > NVM_MAX_VLBA / (PBLK_RAIL_STRIDE_WIDTH)) {
-		struct bio *split;
+	sec *= (dev->geo.csecs >> 9);
 
-		split = bio_split(*bio, rail_max_sec, GFP_KERNEL, &pblk_bio_set);
-		/* there isn't chance to merge the splitted bio */
-		split->bi_opf |= REQ_NOMERGE;
-		bio_set_flag(*bio, BIO_QUEUE_ENTERED);
+	split = bio_split(*bio, sec, GFP_KERNEL, &pblk_bio_set);
+	/* there isn't chance to merge the splitted bio */
+	split->bi_opf |= REQ_NOMERGE;
+	bio_set_flag(*bio, BIO_QUEUE_ENTERED);
 
-		bio_chain(split, *bio);
-		generic_make_request(*bio);
-		*bio = split;
-	}
+	bio_chain(split, *bio);
+	generic_make_request(*bio);
+	*bio = split;
 }
 
 /* RAIL's sector mapping function */
@@ -586,7 +582,7 @@ static void pblk_rail_end_io_read(struct nvm_rq *rqd)
 
 		valid = bitmap_weight(pr_ctx->bitmap, PBLK_RAIL_STRIDE_WIDTH);
 		bitmap_shift_right(pr_ctx->bitmap, pr_ctx->bitmap,
-				   PBLK_RAIL_STRIDE_WIDTH, NVM_MAX_VLBA);
+				   PBLK_RAIL_STRIDE_WIDTH, PR_BITMAP_SIZE);
 
 		if (valid == 0) /* Skip cached reads */
 			continue;
@@ -700,48 +696,65 @@ static void pblk_rail_set_bitmap(struct pblk *pblk, struct ppa_addr *ppa_list,
 	}
 }
 
-int pblk_rail_setup_read(struct pblk *pblk, struct nvm_rq *rqd, int blba,
-			 unsigned long *read_bitmap, int bio_init_idx,
-			 struct bio *bio)
+int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd, int blba,
+		       unsigned long *read_bitmap, int bio_init_idx,
+		       struct bio **bio)
 {
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	struct pblk_pr_ctx *pr_ctx;
-	struct ppa_addr rail_ppa_list[PBLK_MAX_REQ_ADDRS];
-	DECLARE_BITMAP(pvalid, NVM_MAX_VLBA);
-	bool read_empty = bitmap_empty(read_bitmap, rqd->nr_ppas);
+	struct ppa_addr rail_ppa_list[NVM_MAX_VLBA];
+	DECLARE_BITMAP(pvalid, PR_BITMAP_SIZE);
+	int nr_secs = rqd->nr_ppas;
+	bool read_empty = bitmap_empty(read_bitmap, nr_secs);
 	int nr_rail_ppas = 0, rail_reads = 0;
 	int i;
 	int ret;
 
-	bitmap_zero(pvalid, NVM_MAX_VLBA);
+	/* Fully cached reads should not enter this path */
+	WARN_ON(bitmap_full(read_bitmap, nr_secs));
 
+	bitmap_zero(pvalid, PR_BITMAP_SIZE);
 	if (rqd->nr_ppas == 1) {
-		pblk_rail_set_bitmap(pblk, &rqd->ppa_addr, 0, rail_ppa_list, &nr_rail_ppas,
-				     read_bitmap, pvalid, &rail_reads);
-		memcpy(&rqd->ppa_addr, rail_ppa_list,
-		       nr_rail_ppas * sizeof(struct ppa_addr));
+		pblk_rail_set_bitmap(pblk, &rqd->ppa_addr, 0, rail_ppa_list,
+				     &nr_rail_ppas, read_bitmap, pvalid,
+				     &rail_reads);
+
+		if (nr_rail_ppas == 1) {
+			memcpy(&rqd->ppa_addr, rail_ppa_list,
+			       nr_rail_ppas * sizeof(struct ppa_addr));
+		}
+		else {
+			rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;
+			rqd->dma_ppa_list = rqd->dma_meta_list + pblk_dma_meta_size;
+			memcpy(rqd->ppa_list, rail_ppa_list,
+			       nr_rail_ppas * sizeof(struct ppa_addr));
+		}
 	}
 	else {
-		for (i = 0; i < rqd->nr_ppas; i++)
-			pblk_rail_set_bitmap(pblk, rqd->ppa_list, i, rail_ppa_list, &nr_rail_ppas,
+		for (i = 0; i < rqd->nr_ppas; i++) {
+			pblk_rail_set_bitmap(pblk, rqd->ppa_list, i,
+					     rail_ppa_list, &nr_rail_ppas,
 					     read_bitmap, pvalid, &rail_reads);
+			if ((nr_rail_ppas + PBLK_RAIL_STRIDE_WIDTH) >=
+			    NVM_MAX_VLBA) {
+				struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 
+				pblk_rail_bio_split(pblk, bio, i + 1);
+				rqd->nr_ppas = pblk_get_secs(*bio);
+				r_ctx->private = *bio;
+				break;
+			}
+		}
 		memcpy(rqd->ppa_list, rail_ppa_list,
 		       nr_rail_ppas * sizeof(struct ppa_addr));
-
 	}
 
-	if (bitmap_empty(read_bitmap, NVM_MAX_VLBA)) {
-		return -77;//NVM_IO_REQUEUE;
+	if (bitmap_empty(read_bitmap, rqd->nr_ppas)) {
+		return NVM_IO_REQUEUE;
 	}
 
-	if (read_empty && !bitmap_empty(read_bitmap, NVM_MAX_VLBA))
-		bio_advance(bio, (rqd->nr_ppas) * PBLK_EXPOSED_PAGE_SIZE);
-
-	if (nr_rail_ppas > 1 && rqd->nr_ppas == 1) {
-		rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;
-		rqd->dma_ppa_list = rqd->dma_meta_list + pblk_dma_meta_size;
-	}
+	if (read_empty && !bitmap_empty(read_bitmap, rqd->nr_ppas))
+		bio_advance(*bio, (rqd->nr_ppas) * PBLK_EXPOSED_PAGE_SIZE);
 
 	if (pblk_setup_partial_read(pblk, rqd, bio_init_idx, read_bitmap,
 				    nr_rail_ppas))
@@ -749,7 +762,7 @@ int pblk_rail_setup_read(struct pblk *pblk, struct nvm_rq *rqd, int blba,
 
 	rqd->end_io = pblk_rail_end_io_read;
 	pr_ctx = r_ctx->private;
-	bitmap_copy(pr_ctx->bitmap, pvalid, NVM_MAX_VLBA);
+	bitmap_copy(pr_ctx->bitmap, pvalid, PR_BITMAP_SIZE);
 
 	ret = pblk_submit_io(pblk, rqd);
 	if (ret) {

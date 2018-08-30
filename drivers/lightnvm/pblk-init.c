@@ -40,9 +40,6 @@ static int pblk_rw_io(struct request_queue *q, struct pblk *pblk,
 	 */
 	if (bio_data_dir(bio) == READ) {
 		blk_queue_split(q, &bio);
-#ifdef CONFIG_NVM_PBLK_RAIL
-		pblk_rail_bio_split(pblk, &bio);
-#endif
 		ret = pblk_submit_read(pblk, bio);
 		if (ret == NVM_IO_DONE && bio_flagged(bio, BIO_CLONED))
 			bio_put(bio);
