@@ -307,7 +307,7 @@ void pblk_bio_free_pages(struct pblk *pblk, struct bio *bio, int off,
 }
 
 int pblk_bio_add_pages(struct pblk *pblk, struct bio *bio, gfp_t flags,
-		       int nr_pages, bool zero)
+		       int nr_pages)
 {
 	struct request_queue *q = pblk->dev->q;
 	struct page *page;
@@ -321,13 +321,6 @@ int pblk_bio_add_pages(struct pblk *pblk, struct bio *bio, gfp_t flags,
 			pblk_err(pblk, "could not add page to bio\n");
 			mempool_free(page, &pblk->page_bio_pool);
 			goto err;
-		}
-		if (zero) {
-			void * addr;
-
-			addr = kmap_atomic(page);
-			memset(addr, 0, PBLK_EXPOSED_PAGE_SIZE);
-			kunmap_atomic(addr);
 		}
 	}
 

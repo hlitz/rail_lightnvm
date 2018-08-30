@@ -145,7 +145,6 @@ static void pblk_rail_lba_parity(u64 *dest, u64 *src)
 int pblk_rail_init(struct pblk *pblk)
 {
 	struct pblk_line_meta *lm = &pblk->lm;
-	struct nvm_tgt_dev *dev = pblk->dev;
 	int i, p2be;
 	unsigned int nr_strides;
 	unsigned int psecs;
@@ -206,11 +205,6 @@ int pblk_rail_init(struct pblk *pblk)
 	for (i = 0; i < nr_strides; i++)
 		sema_init(&pblk->rail.stride_sem[i], 1);
 
-	/* Reduce max bio size to satisfy 64 ppa limit for RAIL reads */
-	blk_queue_max_hw_sectors(dev->q,
-				 (dev->geo.csecs >> 9) * NVM_MAX_VLBA /
-				 (PBLK_RAIL_STRIDE_WIDTH - 1));
-
 	pblk->map_page = pblk_rail_map_page_data;
 	printk(KERN_EMERG "Initialized RAIL with stride width %d\n",
 	       PBLK_RAIL_STRIDE_WIDTH);
@@ -252,6 +246,26 @@ void pblk_rail_free(struct pblk *pblk)
 	for (i = 0; i < nr_strides; i++)
 		kfree(pblk->rail.p2b[i]);
 	kfree(pblk->rail.p2b);
+}
+
+void pblk_rail_bio_split(struct pblk *pblk, struct bio **bio)
+{
+	struct nvm_tgt_dev *dev = pblk->dev;
+	int rail_max_sec = (dev->geo.csecs >> 9) * NVM_MAX_VLBA /
+		(PBLK_RAIL_STRIDE_WIDTH);
+
+	if(pblk_get_secs(*bio) > NVM_MAX_VLBA / (PBLK_RAIL_STRIDE_WIDTH)) {
+		struct bio *split;
+
+		split = bio_split(*bio, rail_max_sec, GFP_KERNEL, &pblk_bio_set);
+		/* there isn't chance to merge the splitted bio */
+		split->bi_opf |= REQ_NOMERGE;
+		bio_set_flag(*bio, BIO_QUEUE_ENTERED);
+
+		bio_chain(split, *bio);
+		generic_make_request(*bio);
+		*bio = split;
+	}
 }
 
 /* RAIL's sector mapping function */

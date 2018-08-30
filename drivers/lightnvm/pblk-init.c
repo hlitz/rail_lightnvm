@@ -40,6 +40,25 @@ static int pblk_rw_io(struct request_queue *q, struct pblk *pblk,
 	 */
 	if (bio_data_dir(bio) == READ) {
 		blk_queue_split(q, &bio);
+#ifdef CONFIG_NVM_PBLK_RAIL
+		pblk_rail_bio_split(pblk, &bio);
+#endif
+/*
+		int i;
+		struct nvm_tgt_dev *dev = pblk->dev;
+		int rail_max_secs = (dev->geo.csecs >> 9) * NVM_MAX_VLBA / 4;
+		while(pblk_get_secs(bio) > NVM_MAX_VLBA/4) {
+
+		  struct bio *split = bio_split(bio, rail_max_secs, GFP_KERNEL, &pblk_bio_set);
+		  
+		  //split->bi_opf |= REQ_NOMERGE;
+		  //split->bi_phys_segments = rail_max_secs;
+		  //bio_set_flag(bio, BIO_QUEUE_ENTERED);
+
+		  bio_chain(split, bio);
+		  generic_make_request(bio);
+		  bio = split;
+		}*/
 		ret = pblk_submit_read(pblk, bio);
 		if (ret == NVM_IO_DONE && bio_flagged(bio, BIO_CLONED))
 			bio_put(bio);

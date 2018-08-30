@@ -617,6 +617,8 @@ struct pblk_rail {
 /* Initialize and tear down RAIL */
 int pblk_rail_init(struct pblk *pblk);
 void pblk_rail_free(struct pblk *pblk);
+void pblk_rail_bio_split(struct pblk *pblk, struct bio **bio);
+/* Map data and parity writes */
 int pblk_rail_map_page_data(struct pblk *pblk, unsigned int sentry,
 			    struct ppa_addr *ppa_list,
 			    unsigned long *lun_bitmap,
@@ -886,7 +888,7 @@ void pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas);
 void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 		unsigned long *lun_bitmap);
 int pblk_bio_add_pages(struct pblk *pblk, struct bio *bio, gfp_t flags,
-		       int nr_pages, bool zero);
+		       int nr_pages);
 void pblk_bio_free_pages(struct pblk *pblk, struct bio *bio, int off,
 			 int nr_pages);
 void pblk_map_invalidate(struct pblk *pblk, struct ppa_addr ppa);

@@ -306,7 +306,7 @@ int pblk_setup_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
 
 	new_bio = bio_alloc(GFP_KERNEL, nr_holes);
 
-	if (pblk_bio_add_pages(pblk, new_bio, GFP_KERNEL, nr_holes, false))
+	if (pblk_bio_add_pages(pblk, new_bio, GFP_KERNEL, nr_holes))
 		goto fail_bio_put;
 
 	if (nr_holes != new_bio->bi_vcnt) {
