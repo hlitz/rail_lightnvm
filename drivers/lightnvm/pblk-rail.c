@@ -258,7 +258,6 @@ static void pblk_rail_bio_split(struct pblk *pblk, struct bio **bio, int sec)
 	/* there isn't chance to merge the splitted bio */
 	split->bi_opf |= REQ_NOMERGE;
 	bio_set_flag(*bio, BIO_QUEUE_ENTERED);
-
 	bio_chain(split, *bio);
 	generic_make_request(*bio);
 	*bio = split;
@@ -725,7 +724,8 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd, int blba,
 		}
 		else {
 			rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;
-			rqd->dma_ppa_list = rqd->dma_meta_list + pblk_dma_meta_size;
+			rqd->dma_ppa_list = rqd->dma_meta_list +
+			  pblk_dma_meta_size;
 			memcpy(rqd->ppa_list, rail_ppa_list,
 			       nr_rail_ppas * sizeof(struct ppa_addr));
 		}
@@ -735,8 +735,10 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd, int blba,
 			pblk_rail_set_bitmap(pblk, rqd->ppa_list, i,
 					     rail_ppa_list, &nr_rail_ppas,
 					     read_bitmap, pvalid, &rail_reads);
-			if ((nr_rail_ppas + PBLK_RAIL_STRIDE_WIDTH) >=
-			    NVM_MAX_VLBA) {
+
+			/* Don't split if this it the last ppa of the rqd */
+			if (((nr_rail_ppas + PBLK_RAIL_STRIDE_WIDTH) >=
+			     NVM_MAX_VLBA) && (i + 1 < rqd->nr_ppas)) {
 				struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 
 				pblk_rail_bio_split(pblk, bio, i + 1);
