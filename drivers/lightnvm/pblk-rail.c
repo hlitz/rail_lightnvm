@@ -154,7 +154,7 @@ int pblk_rail_init(struct pblk *pblk)
 
 	if (((lm->blk_per_line % PBLK_RAIL_STRIDE_WIDTH) != 0) ||
 	    (lm->blk_per_line < PBLK_RAIL_STRIDE_WIDTH)) {
-		pr_err("pblk: unsupported RAIL stride width %i\n", lm->blk_per_line);
+		pr_err("pblk: unsupported RAIL stride %i\n", lm->blk_per_line);
 		return -EINVAL;
 	}
 	
@@ -460,10 +460,10 @@ static int pblk_rail_read_to_bio(struct pblk *pblk, struct nvm_rq *rqd,
 			pos = pblk_rb_wrap_pos(&pblk->rwb, pos + sec);
 			entry = &pblk->rwb.entries[pos];
 			w_ctx = &entry->w_ctx;
-			lba_src = le64_to_cpu(w_ctx->lba);
+			lba_src = w_ctx->lba;
 
 			if (sec < pblk->rail.p2b[stride][i].nr_valid &&
-			    lba_src != cpu_to_le64(ADDR_EMPTY)) {
+			    lba_src != ADDR_EMPTY) {
 				pblk_rail_data_parity(pg_addr, entry->data);
 				pblk_rail_lba_parity(lba, &lba_src);
 			}
@@ -514,7 +514,8 @@ int pblk_rail_submit_write(struct pblk *pblk)
 		bio_set_op_attrs(bio, REQ_OP_WRITE, 0);
 		rqd->bio = bio;
 
-		pblk_rail_read_to_bio(pblk, rqd, bio, stride, pblk->min_write_pgs, i);
+		pblk_rail_read_to_bio(pblk, rqd, bio, stride,
+				      pblk->min_write_pgs, i);
 
 		if (pblk_submit_io_set(pblk, rqd, pblk_rail_end_io_write)) {
 			bio_put(rqd->bio);
@@ -577,6 +578,7 @@ static void pblk_rail_end_io_read(struct nvm_rq *rqd)
 
 	for (i = 0; i < nr_secs; i++) {
 		int line_id = pblk_ppa_to_line(rqd->ppa_list[rail_ppa]);
+		u64 meta_lba = 0x0UL, mlba;
 		struct pblk_line *line = &pblk->lines[line_id];
 
 		valid = bitmap_weight(pr_ctx->bitmap, PBLK_RAIL_STRIDE_WIDTH);
@@ -597,18 +599,19 @@ static void pblk_rail_end_io_read(struct nvm_rq *rqd)
 		for (r = 0; r < valid; r++, rail_ppa++) {
 			src_bv = new_bio->bi_io_vec[rail_ppa];
 
-			if (lba_list_media[rail_ppa] != cpu_to_le64(ADDR_EMPTY)) {
+			if (lba_list_media[rail_ppa] != cpu_to_le64(ADDR_EMPTY))
+			{
 				src_p = kmap_atomic(src_bv.bv_page);
 				pblk_rail_data_parity(dst_p + dst_bv.bv_offset,
 						      src_p + src_bv.bv_offset);
-				pblk_rail_lba_parity(&meta_list[i].lba,
-						     &lba_list_media[rail_ppa]);
+				mlba = le64_to_cpu(lba_list_media[rail_ppa]);
+				pblk_rail_lba_parity(&meta_lba, &mlba);
 				kunmap_atomic(src_p);
 			}
 
 			mempool_free(src_bv.bv_page, &pblk->page_bio_pool);
 		}
-
+		meta_list[i].lba = cpu_to_le64(meta_lba);
 		kunmap_atomic(dst_p);
 	}
 
@@ -623,8 +626,9 @@ static void pblk_rail_end_io_read(struct nvm_rq *rqd)
 
 /* Converts original ppa into ppa list of RAIL reads */
 static int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
-				struct ppa_addr *rail_ppas, unsigned char *pvalid,
-				int *nr_rail_ppas, int *rail_reads)
+				struct ppa_addr *rail_ppas,
+				unsigned char *pvalid, int *nr_rail_ppas,
+				int *rail_reads)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
