@@ -1886,6 +1886,7 @@ static void __pblk_down_page(struct pblk *pblk, struct ppa_addr *ppa_list,
 #ifdef CONFIG_NVM_PBLK_RAIL
 	(void)rlun;
 	ret = pblk_rail_down_stride(pblk, pos, msecs_to_jiffies(30000));
+	ret = down_timeout(&rlun->wr_sem, msecs_to_jiffies(30000));
 #else
 	ret = down_timeout(&rlun->wr_sem, msecs_to_jiffies(30000));
 #endif
@@ -1938,6 +1939,7 @@ void pblk_up_page(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas)
 
 #ifdef CONFIG_NVM_PBLK_RAIL
 	pblk_rail_up_stride(pblk, pos);
+	up(&rlun->wr_sem);
 #else
 	up(&rlun->wr_sem);
 #endif
@@ -1957,6 +1959,7 @@ void pblk_up_rq(struct pblk *pblk, struct ppa_addr *ppa_list, int nr_ppas,
 
 #ifdef CONFIG_NVM_PBLK_RAIL
 		pblk_rail_up_stride(pblk, bit);
+		up(&rlun->wr_sem);
 #else
 		up(&rlun->wr_sem);
 #endif
