@@ -157,7 +157,7 @@ int pblk_rail_init(struct pblk *pblk)
 		pr_err("pblk: unsupported RAIL stride %i\n", lm->blk_per_line);
 		return -EINVAL;
 	}
-	
+	spin_lock_init(&pblk->rail.lock);	
 	psecs = pblk_rail_psec_per_stripe(pblk);
 	nr_strides = pblk_rail_sec_per_stripe(pblk) / PBLK_RAIL_STRIDE_WIDTH;
 
@@ -802,15 +802,20 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd, int blba,
 /* Notify readers that LUN is serving high latency operation */
 static void pblk_rail_notify_reader_down(struct pblk *pblk, int lun)
 {
+  unsigned long flags;
+  spin_lock_irqsave(&pblk->rail.lock, flags);
 	WARN_ON(test_and_set_bit(lun, pblk->rail.busy_bitmap));
-	smp_mb__after_atomic();
+	spin_unlock_irqrestore(&pblk->rail.lock, flags);  
+	//	smp_mb__after_atomic();
 }
 
 static void pblk_rail_notify_reader_up(struct pblk *pblk, int lun)
 {
-
+  unsigned long flags;
+  spin_lock_irqsave(&pblk->rail.lock, flags);
 	WARN_ON(!test_and_clear_bit(lun, pblk->rail.busy_bitmap));
-	smp_mb__after_atomic();
+	spin_unlock_irqrestore(&pblk->rail.lock, flags);
+	//	smp_mb__after_atomic();
 }
 
 int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
@@ -818,8 +823,13 @@ int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	int lun_pos = pblk_ppa_to_pos(geo, ppa);
+	int ret;
+  unsigned long flags;
+  spin_lock_irqsave(&pblk->rail.lock, flags);
+  	ret = test_bit(lun_pos, pblk->rail.busy_bitmap);
+	spin_unlock_irqrestore(&pblk->rail.lock, flags);  
 
-	return test_bit(lun_pos, pblk->rail.busy_bitmap);
+     return ret;//test_bit(lun_pos, pblk->rail.busy_bitmap);
 }
 
 /* Per stripe semaphore, enforces one writer per stripe */

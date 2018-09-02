@@ -619,6 +619,7 @@ struct pblk_rail {
 	unsigned long *busy_bitmap;     /* LUNs currently serving a write/erase */
 	u64 *lba;                       /* parity LBA buffer */
 	struct semaphore *stride_sem;   /* Per stride semaphore */
+  spinlock_t lock;
 };
 
 /* Initialize and tear down RAIL */
