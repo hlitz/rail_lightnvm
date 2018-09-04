@@ -809,7 +809,7 @@ int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
 /* Per stripe semaphore, enforces one writer per stripe */
 int pblk_rail_down_stride(struct pblk *pblk, int lun_pos, int timeout)
 {
-	int strides = pblk_rail_sec_per_stripe(pblk) / PBLK_RAIL_STRIDE_WIDTH;
+	int strides = pblk_rail_nr_parity_luns(pblk);
 	int stride = lun_pos % strides;
 	int ret;
 
@@ -821,7 +821,7 @@ int pblk_rail_down_stride(struct pblk *pblk, int lun_pos, int timeout)
 
 void pblk_rail_up_stride(struct pblk *pblk, int lun_pos)
 {
-	int strides = pblk_rail_sec_per_stripe(pblk) / PBLK_RAIL_STRIDE_WIDTH;
+	int strides = pblk_rail_nr_parity_luns(pblk);
 	int stride = lun_pos % strides;
 
 	pblk_rail_notify_reader_up(pblk, lun_pos);
