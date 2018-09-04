@@ -650,8 +650,7 @@ static int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 		chnl = pblk_pos_to_chnl(geo, neighbor);
 		pblk_dev_ppa_set_lun(pblk, &rail_ppa, lun);
 		pblk_dev_ppa_set_chnl(pblk, &rail_ppa, chnl);
-		if(pblk_rail_lun_busy(pblk, rail_ppa))
-		  printk(KERN_EMERG "HAH luns busy %i lunpos %i\n", neighbor, lun_pos); 
+
 		line = &pblk->lines[pblk_ppa_to_line(rail_ppa)];
 		laddr = pblk_dev_ppa_to_line_addr(pblk, rail_ppa);
 
@@ -664,8 +663,7 @@ static int pblk_rail_setup_ppas(struct pblk *pblk, struct ppa_addr ppa,
 			/* If any other neighbor is bad we can just skip it */
 			continue;
 		}
-		//		printk(KERN_EMERG "READ lunpos %i niegh %i\n", lun_pos, neighbor);
-		//print_ppa(pblk,&rail_ppa, "read " , i);
+
 		rail_ppas[ppas++] = rail_ppa;
 		valid++;
 	}
@@ -696,19 +694,6 @@ static void pblk_rail_set_bitmap(struct pblk *pblk, struct ppa_addr *ppa_list,
 		bitmap_set(pvalid, ppa * PBLK_RAIL_STRIDE_WIDTH, valid);
 	}
 	else {
-
-	  struct nvm_tgt_dev *dev = pblk->dev;
-	  struct nvm_geo *geo = &dev->geo;
-	  int pos = pblk_ppa_to_pos(geo, ppa_list[ppa]);
-	  struct pblk_lun *rlun = &pblk->luns[pos];	  
-	  if(down_trylock(&rlun->wr_sem)) {
-	    printk(KERN_EMERG "huh trylock worked busy %i\n", pblk_rail_lun_busy(pblk, ppa_list[ppa]));
-	    //up(&rlun->wr_sem);
-	  }
-	  else
-	    up(&rlun->wr_sem);
-
-	  
 		rail_ppa_list[(*nr_rail_ppas)++] = ppa_list[ppa];
 		bitmap_set(pvalid, ppa * PBLK_RAIL_STRIDE_WIDTH, 1);
 	}
@@ -808,9 +793,8 @@ static void pblk_rail_notify_reader_down(struct pblk *pblk, int lun)
 
 static void pblk_rail_notify_reader_up(struct pblk *pblk, int lun)
 {
-
+	smp_mb__before_atomic();
 	WARN_ON(!test_and_clear_bit(lun, pblk->rail.busy_bitmap));
-	smp_mb__after_atomic();
 }
 
 int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
@@ -825,20 +809,19 @@ int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
 /* Per stripe semaphore, enforces one writer per stripe */
 int pblk_rail_down_stride(struct pblk *pblk, int lun_pos, int timeout)
 {
-  int strides = pblk_rail_nr_parity_luns(pblk);//pblk_rail_sec_per_stripe(pblk) / PBLK_RAIL_STRIDE_WIDTH;
+	int strides = pblk_rail_sec_per_stripe(pblk) / PBLK_RAIL_STRIDE_WIDTH;
 	int stride = lun_pos % strides;
 	int ret;
 
 	ret = down_timeout(&pblk->rail.stride_sem[stride], timeout);
 	pblk_rail_notify_reader_down(pblk, lun_pos);
-	//printk(KERN_EMERG "writer lunpos %i str %i strds %i\n", lun_pos, stride, strides);
-	
+
 	return ret;
 }
 
 void pblk_rail_up_stride(struct pblk *pblk, int lun_pos)
 {
-  int strides = pblk_rail_nr_parity_luns(pblk);//pblk_rail_sec_per_stripe(pblk) / PBLK_RAIL_STRIDE_WIDTH;
+	int strides = pblk_rail_sec_per_stripe(pblk) / PBLK_RAIL_STRIDE_WIDTH;
 	int stride = lun_pos % strides;
 
 	pblk_rail_notify_reader_up(pblk, lun_pos);
