@@ -123,10 +123,12 @@ struct pblk_g_ctx {
 	u64 lba;
 };
 
+#define PR_BITMAP_SIZE NVM_MAX_VLBA
+
 /* partial read context */
 struct pblk_pr_ctx {
 	struct bio *orig_bio;
-	DECLARE_BITMAP(bitmap, NVM_MAX_VLBA);
+	DECLARE_BITMAP(bitmap, PR_BITMAP_SIZE);
 	unsigned int orig_nr_secs;
 	unsigned int bio_init_idx;
 	void *ppa_ptr;

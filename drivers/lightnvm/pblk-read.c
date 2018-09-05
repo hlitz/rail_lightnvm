@@ -324,7 +324,7 @@ int pblk_setup_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
 
 	pr_ctx->ppa_ptr = NULL;
 	pr_ctx->orig_bio = bio;
-	bitmap_copy(pr_ctx->bitmap, read_bitmap, NVM_MAX_VLBA);
+	bitmap_copy(pr_ctx->bitmap, read_bitmap, PR_BITMAP_SIZE);
 	pr_ctx->bio_init_idx = bio_init_idx;
 	pr_ctx->orig_nr_secs = nr_secs;
 	r_ctx->private = pr_ctx;
@@ -425,7 +425,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	struct pblk_g_ctx *r_ctx;
 	struct nvm_rq *rqd;
 	unsigned int bio_init_idx;
-	DECLARE_BITMAP(read_bitmap, NVM_MAX_VLBA);
+	DECLARE_BITMAP(read_bitmap, PR_BITMAP_SIZE);
 	int ret = NVM_IO_ERR;
 
 	generic_start_io_acct(q, READ, bio_sectors(bio), &pblk->disk->part0);
