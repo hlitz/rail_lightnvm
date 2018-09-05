@@ -876,6 +876,9 @@ int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd);
 int pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		       unsigned int sentry, unsigned long *lun_bitmap,
 		       unsigned int valid_secs, struct ppa_addr *erase_ppa);
+void pblk_map_sec(struct pblk *pblk, struct pblk_line *line, int sentry,
+		  struct pblk_sec_meta *meta_list, __le64 *lba_list,
+		  struct ppa_addr ppa, u64 paddr, int sec, int valid);
 int pblk_map_rq(struct pblk *pblk, struct nvm_rq *rqd, unsigned int sentry,
 		 unsigned long *lun_bitmap, unsigned int valid_secs,
 		 unsigned int off);
