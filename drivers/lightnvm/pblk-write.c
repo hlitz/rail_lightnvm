@@ -311,7 +311,7 @@ static int pblk_alloc_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 }
 
 static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
-			   struct ppa_addr *erase_ppa)
+			   struct ppa_addr *erase_ppa, nvm_end_io_fn(*end_io))
 {
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct pblk_line *e_line = pblk_line_get_erase(pblk);
@@ -327,7 +327,7 @@ static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		return -ENOMEM;
 	c_ctx->lun_bitmap = lun_bitmap;
 
-	ret = pblk_alloc_w_rq(pblk, rqd, nr_secs, pblk_end_io_write);
+	ret = pblk_alloc_w_rq(pblk, rqd, nr_secs, end_io);
 	if (ret) {
 		kfree(lun_bitmap);
 		return ret;
@@ -503,7 +503,8 @@ static struct pblk_line *pblk_should_submit_meta_io(struct pblk *pblk,
 	return meta_line;
 }
 
-int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd)
+int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd,
+		       nvm_end_io_fn(*end_io))
 {
 	struct ppa_addr erase_ppa;
 	struct pblk_line *meta_line;
@@ -512,7 +513,7 @@ int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd)
 	pblk_ppa_set_empty(&erase_ppa);
 
 	/* Assign lbas to ppas and populate request structure */
-	err = pblk_setup_w_rq(pblk, rqd, &erase_ppa);
+	err = pblk_setup_w_rq(pblk, rqd, &erase_ppa, end_io);
 	if (err) {
 		pblk_err(pblk, "could not setup write request: %d\n", err);
 		return NVM_IO_ERR;
@@ -636,7 +637,7 @@ static int pblk_submit_write(struct pblk *pblk, int *secs_left)
 		goto fail_put_bio;
 	}
 
-	if (pblk_submit_io_set(pblk, rqd))
+	if (pblk_submit_io_set(pblk, rqd, pblk_end_io_write))
 		goto fail_free_bio;
 
 #ifdef CONFIG_NVM_PBLK_DEBUG

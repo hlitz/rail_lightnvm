@@ -868,7 +868,8 @@ int pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
 			unsigned long flags);
 int pblk_write_gc_to_cache(struct pblk *pblk, struct pblk_gc_rq *gc_rq);
 void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd);
-int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd);
+int pblk_submit_io_set(struct pblk *pblk, struct nvm_rq *rqd,
+		       nvm_end_io_fn(*end_io));
 
 /*
  * pblk map
