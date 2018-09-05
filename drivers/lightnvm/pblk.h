@@ -28,6 +28,7 @@
 #include <linux/vmalloc.h>
 #include <linux/crc32.h>
 #include <linux/uuid.h>
+#include <linux/log2.h>
 
 #include <linux/lightnvm.h>
 
@@ -45,7 +46,7 @@
 #define PBLK_COMMAND_TIMEOUT_MS 30000
 
 /* Max 512 LUNs per device */
-#define PBLK_MAX_LUNS_BITMAP (4)
+#define PBLK_MAX_LUNS_BITMAP (512)
 
 #define NR_PHY_IN_LOG (PBLK_EXPOSED_PAGE_SIZE / PBLK_SECTOR)
 
@@ -123,10 +124,17 @@ struct pblk_g_ctx {
 	u64 lba;
 };
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+#define PBLK_RAIL_STRIDE_WIDTH 4
+#define PR_BITMAP_SIZE (NVM_MAX_VLBA * PBLK_RAIL_STRIDE_WIDTH)
+#else
+#define PR_BITMAP_SIZE NVM_MAX_VLBA
+#endif
+
 /* partial read context */
 struct pblk_pr_ctx {
 	struct bio *orig_bio;
-	DECLARE_BITMAP(bitmap, NVM_MAX_VLBA);
+	DECLARE_BITMAP(bitmap, PR_BITMAP_SIZE);
 	unsigned int orig_nr_secs;
 	unsigned int bio_init_idx;
 	void *ppa_ptr;
@@ -604,6 +612,46 @@ struct pblk_addrf {
 	int sec_ws_stripe;
 };
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+
+struct p2b_entry {
+	int pos;
+	int nr_valid;
+};
+
+struct pblk_rail {
+	struct p2b_entry **p2b;         /* Maps RAIL sectors to rb pos */
+	struct page *pages;             /* Pages to hold parity writes */
+	void **data;                    /* Buffer that holds parity pages */
+	DECLARE_BITMAP(busy_bitmap, PBLK_MAX_LUNS_BITMAP);
+	u64 *lba;                       /* Buffer to compute LBA parity */
+};
+
+/* Initialize and tear down RAIL */
+int pblk_rail_init(struct pblk *pblk);
+void pblk_rail_free(struct pblk *pblk);
+/* Recovery Path */
+bool pblk_rail_sec_is_parity(struct pblk *pblk, struct pblk_line *line,
+			     int pos);
+/* Adjust some system parameters */
+bool pblk_rail_meta_distance(struct pblk_line *data_line);
+int pblk_rail_rb_delay(struct pblk_rb *rb);
+/* Core */
+void pblk_rail_line_close(struct pblk *pblk, struct pblk_line *line);
+int pblk_rail_down_stride(struct pblk *pblk, int lun, int timeout);
+void pblk_rail_up_stride(struct pblk *pblk, int lun);
+/* Write path */
+int pblk_rail_submit_write(struct pblk *pblk);
+/* Read Path */
+int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd, int blba,
+		       unsigned long *read_bitmap, int bio_init_idx,
+		       struct bio **bio);
+/* Mapping path */
+void pblk_rail_map_sec(struct pblk *pblk, struct pblk_line *line, int sentry,
+		       struct pblk_sec_meta *meta_list, __le64 *lba_list,
+		       struct ppa_addr ppa, u64 paddr, int sec, int valid);
+#endif /* CONFIG_NVM_PBLK_RAIL */
+
 struct pblk {
 	struct nvm_tgt_dev *dev;
 	struct gendisk *disk;
@@ -789,6 +837,7 @@ struct nvm_chk_meta *pblk_chunk_get_off(struct pblk *pblk,
 void pblk_log_write_err(struct pblk *pblk, struct nvm_rq *rqd);
 void pblk_log_read_err(struct pblk *pblk, struct nvm_rq *rqd);
 int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd);
+int pblk_submit_io_sem(struct pblk *pblk, struct nvm_rq *rqd);
 int pblk_submit_io_sync(struct pblk *pblk, struct nvm_rq *rqd);
 int pblk_submit_io_sync_sem(struct pblk *pblk, struct nvm_rq *rqd);
 int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line);
@@ -1099,6 +1148,16 @@ static inline u64 pblk_dev_ppa_to_line_addr(struct pblk *pblk,
 	}
 
 	return paddr;
+}
+
+static inline int pblk_pos_to_lun(struct nvm_geo *geo, int pos)
+{
+	return pos >> ilog2(geo->num_ch);
+}
+
+static inline int pblk_pos_to_chnl(struct nvm_geo *geo, int pos)
+{
+	return pos % geo->num_ch;
 }
 
 static inline struct ppa_addr pblk_ppa32_to_ppa64(struct pblk *pblk, u32 ppa32)

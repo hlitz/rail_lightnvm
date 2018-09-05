@@ -492,6 +492,17 @@ int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd)
 	return nvm_submit_io(dev, rqd);
 }
 
+int pblk_submit_io_sem(struct pblk *pblk, struct nvm_rq *rqd)
+{
+	struct ppa_addr *ppa_list = nvm_rq_to_ppa_list(rqd);
+	int ret;
+
+	pblk_down_chunk(pblk, ppa_list[0]);
+	ret = pblk_submit_io(pblk, rqd);
+
+	return ret;
+}
+
 void pblk_check_chunk_state_update(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	struct ppa_addr *ppa_list = nvm_rq_to_ppa_list(rqd);
