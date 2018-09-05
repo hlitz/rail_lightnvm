@@ -18,11 +18,11 @@
 
 #include "pblk.h"
 
-static int pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
-			      struct ppa_addr *ppa_list,
-			      unsigned long *lun_bitmap,
-			      struct pblk_sec_meta *meta_list,
-			      unsigned int valid_secs)
+int pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
+		       struct ppa_addr *ppa_list,
+		       unsigned long *lun_bitmap,
+		       struct pblk_sec_meta *meta_list,
+		       unsigned int valid_secs)
 {
 	struct pblk_line *line = pblk_line_get_data(pblk);
 	struct pblk_emeta *emeta;
@@ -95,8 +95,8 @@ void pblk_map_rq(struct pblk *pblk, struct nvm_rq *rqd, unsigned int sentry,
 
 	for (i = off; i < rqd->nr_ppas; i += min) {
 		map_secs = (i + min > valid_secs) ? (valid_secs % min) : min;
-		if (pblk_map_page_data(pblk, sentry + i, &ppa_list[i],
-					lun_bitmap, &meta_list[i], map_secs)) {
+		if (pblk->map_page(pblk, sentry + i, &ppa_list[i], lun_bitmap,
+				   &meta_list[i], map_secs)) {
 			bio_put(rqd->bio);
 			pblk_free_rqd(pblk, rqd, PBLK_WRITE);
 			pblk_pipeline_stop(pblk);
@@ -121,8 +121,8 @@ void pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 
 	for (i = 0; i < rqd->nr_ppas; i += min) {
 		map_secs = (i + min > valid_secs) ? (valid_secs % min) : min;
-		if (pblk_map_page_data(pblk, sentry + i, &ppa_list[i],
-					lun_bitmap, &meta_list[i], map_secs)) {
+		if (pblk->map_page(pblk, sentry + i, &ppa_list[i], lun_bitmap,
+				   &meta_list[i], map_secs)) {
 			bio_put(rqd->bio);
 			pblk_free_rqd(pblk, rqd, PBLK_WRITE);
 			pblk_pipeline_stop(pblk);

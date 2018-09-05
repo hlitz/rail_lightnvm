@@ -604,6 +604,12 @@ struct pblk_addrf {
 	int sec_ws_stripe;
 };
 
+typedef int (pblk_map_page_fn)(struct pblk *pblk, unsigned int sentry,
+			       struct ppa_addr *ppa_list,
+			       unsigned long *lun_bitmap,
+			       struct pblk_sec_meta *meta_list,
+			       unsigned int valid_secs);
+
 struct pblk {
 	struct nvm_tgt_dev *dev;
 	struct gendisk *disk;
@@ -709,6 +715,8 @@ struct pblk {
 	struct timer_list wtimer;
 
 	struct pblk_gc gc;
+
+	pblk_map_page_fn *map_page;
 };
 
 struct pblk_line_ws {
@@ -873,6 +881,11 @@ void pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 void pblk_map_rq(struct pblk *pblk, struct nvm_rq *rqd, unsigned int sentry,
 		 unsigned long *lun_bitmap, unsigned int valid_secs,
 		 unsigned int off);
+int pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
+		       struct ppa_addr *ppa_list,
+		       unsigned long *lun_bitmap,
+		       struct pblk_sec_meta *meta_list,
+		       unsigned int valid_secs);
 
 /*
  * pblk write thread

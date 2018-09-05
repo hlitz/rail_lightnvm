@@ -411,6 +411,8 @@ static int pblk_core_init(struct pblk *pblk)
 	pblk->pad_rst_wa = 0;
 	pblk->gc_rst_wa = 0;
 
+	pblk->map_page = pblk_map_page_data;
+
 	atomic64_set(&pblk->nr_flush, 0);
 	pblk->nr_flush_rst = 0;
 
