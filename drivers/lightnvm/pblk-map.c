@@ -18,15 +18,32 @@
 
 #include "pblk.h"
 
+void pblk_map_sec(struct pblk *pblk, struct pblk_line *line, int sentry,
+		       struct pblk_sec_meta *meta_list, __le64 *lba_list,
+		       struct ppa_addr ppa, u64 paddr, int sec, int valid)
+{
+	struct pblk_w_ctx *w_ctx;
+	__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
+
+	kref_get(&line->ref);
+	w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry);
+	w_ctx->ppa = ppa;
+	meta_list->lba = cpu_to_le64(w_ctx->lba);
+	*lba_list = cpu_to_le64(w_ctx->lba);
+	if (*lba_list != addr_empty)
+		line->nr_valid_lbas++;
+	else
+		atomic64_inc(&pblk->pad_wa);
+}
+
 static int pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
-			      struct ppa_addr *ppa_list,
-			      unsigned long *lun_bitmap,
-			      struct pblk_sec_meta *meta_list,
-			      unsigned int valid_secs)
+		       struct ppa_addr *ppa_list,
+		       unsigned long *lun_bitmap,
+		       struct pblk_sec_meta *meta_list,
+		       unsigned int valid_secs)
 {
 	struct pblk_line *line = pblk_line_get_data(pblk);
 	struct pblk_emeta *emeta;
-	struct pblk_w_ctx *w_ctx;
 	__le64 *lba_list;
 	u64 paddr;
 	int nr_secs = pblk->min_write_pgs;
@@ -64,15 +81,8 @@ static int pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 		 * lock or memory barrier.
 		 */
 		if (i < valid_secs) {
-			kref_get(&line->ref);
-			w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry + i);
-			w_ctx->ppa = ppa_list[i];
-			meta_list[i].lba = cpu_to_le64(w_ctx->lba);
-			lba_list[paddr] = cpu_to_le64(w_ctx->lba);
-			if (lba_list[paddr] != addr_empty)
-				line->nr_valid_lbas++;
-			else
-				atomic64_inc(&pblk->pad_wa);
+			pblk_map_sec(pblk, line, sentry + i, &meta_list[i],
+					  &lba_list[paddr], ppa_list[i], paddr, i, valid_secs);
 		} else {
 			lba_list[paddr] = meta_list[i].lba = addr_empty;
 			__pblk_map_invalidate(pblk, line, paddr);
@@ -96,7 +106,7 @@ void pblk_map_rq(struct pblk *pblk, struct nvm_rq *rqd, unsigned int sentry,
 	for (i = off; i < rqd->nr_ppas; i += min) {
 		map_secs = (i + min > valid_secs) ? (valid_secs % min) : min;
 		if (pblk_map_page_data(pblk, sentry + i, &ppa_list[i],
-					lun_bitmap, &meta_list[i], map_secs)) {
+				       lun_bitmap, &meta_list[i], map_secs)) {
 			bio_put(rqd->bio);
 			pblk_free_rqd(pblk, rqd, PBLK_WRITE);
 			pblk_pipeline_stop(pblk);
@@ -122,7 +132,7 @@ void pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	for (i = 0; i < rqd->nr_ppas; i += min) {
 		map_secs = (i + min > valid_secs) ? (valid_secs % min) : min;
 		if (pblk_map_page_data(pblk, sentry + i, &ppa_list[i],
-					lun_bitmap, &meta_list[i], map_secs)) {
+				       lun_bitmap, &meta_list[i], map_secs)) {
 			bio_put(rqd->bio);
 			pblk_free_rqd(pblk, rqd, PBLK_WRITE);
 			pblk_pipeline_stop(pblk);
