@@ -58,6 +58,12 @@ static int pblk_recov_l2p_from_emeta(struct pblk *pblk, struct pblk_line *line)
 		ppa = addr_to_gen_ppa(pblk, i, line->id);
 		pos = pblk_ppa_to_pos(geo, ppa);
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+		/* Do not add L2P entry for parity sectors */
+		if (pblk_rail_sec_is_parity(pblk, line, pos))
+			continue;
+#endif
+
 		/* Do not update bad blocks */
 		if (test_bit(pos, line->blk_bitmap))
 			continue;

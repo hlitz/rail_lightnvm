@@ -1048,6 +1048,7 @@ fail_free_lines:
 	kfree(pblk->lines);
 fail_free_chunk_meta:
 	kfree(chunk_meta);
+
 fail_free_luns:
 	kfree(pblk->luns);
 fail_free_meta:
@@ -1106,6 +1107,11 @@ static void pblk_tear_down(struct pblk *pblk, bool graceful)
 		__pblk_pipeline_flush(pblk);
 	__pblk_pipeline_stop(pblk);
 	pblk_writer_stop(pblk);
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	pblk_rail_free(pblk);
+#endif
+
 	pblk_rb_sync_l2p(&pblk->rwb);
 	pblk_rl_free(&pblk->rl);
 
@@ -1224,6 +1230,12 @@ static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk,
 		goto fail_stop_writer;
 	}
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	ret = pblk_rail_init(pblk);
+	if (ret)
+		goto fail_free_gc;
+#endif
+
 	/* inherit the size from the underlying device */
 	blk_queue_logical_block_size(tqueue, queue_physical_block_size(bqueue));
 	blk_queue_max_hw_sectors(tqueue, queue_max_hw_sectors(bqueue));
@@ -1246,6 +1258,11 @@ static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk,
 	pblk_gc_should_kick(pblk);
 
 	return pblk;
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+fail_free_gc:
+	pblk_gc_exit(pblk, false);
+#endif
 
 fail_stop_writer:
 	pblk_writer_stop(pblk);

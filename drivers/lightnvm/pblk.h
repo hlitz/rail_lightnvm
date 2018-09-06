@@ -757,6 +757,10 @@ struct pblk {
 	struct timer_list wtimer;
 
 	struct pblk_gc gc;
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	struct pblk_rail rail;
+#endif
 };
 
 struct pblk_line_ws {
