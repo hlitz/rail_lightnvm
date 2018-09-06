@@ -45,7 +45,7 @@
 #define PBLK_COMMAND_TIMEOUT_MS 30000
 
 /* Max 512 LUNs per device */
-#define PBLK_MAX_LUNS_BITMAP (4)
+#define PBLK_MAX_LUNS_BITMAP (512)
 
 #define NR_PHY_IN_LOG (PBLK_EXPOSED_PAGE_SIZE / PBLK_SECTOR)
 
@@ -123,7 +123,12 @@ struct pblk_g_ctx {
 	u64 lba;
 };
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+#define PBLK_RAIL_STRIDE_WIDTH 4
+#define PR_BITMAP_SIZE (NVM_MAX_VLBA * PBLK_RAIL_STRIDE_WIDTH)
+#else
 #define PR_BITMAP_SIZE NVM_MAX_VLBA
+#endif
 
 /* partial read context */
 struct pblk_pr_ctx {
@@ -605,6 +610,39 @@ struct pblk_addrf {
 	int sec_lun_stripe;
 	int sec_ws_stripe;
 };
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+
+struct p2b_entry {
+	int pos;
+	int nr_valid;
+};
+
+struct pblk_rail {
+	struct p2b_entry **p2b;         /* Maps RAIL sectors to rb pos */
+	struct page *pages;             /* Pages to hold parity writes */
+	void **data;                    /* Buffer that holds parity pages */
+	DECLARE_BITMAP(busy_bitmap, PBLK_MAX_LUNS_BITMAP);
+	u64 *lba;                       /* Buffer to compute LBA parity */
+};
+
+/* Initialize and tear down RAIL */
+int pblk_rail_init(struct pblk *pblk);
+void pblk_rail_free(struct pblk *pblk);
+/* Adjust some system parameters */
+bool pblk_rail_meta_distance(struct pblk_line *data_line);
+int pblk_rail_rb_delay(struct pblk_rb *rb);
+/* Core */
+void pblk_rail_line_close(struct pblk *pblk, struct pblk_line *line);
+int pblk_rail_down_stride(struct pblk *pblk, int lun, int timeout);
+void pblk_rail_up_stride(struct pblk *pblk, int lun);
+/* Write path */
+int pblk_rail_submit_write(struct pblk *pblk);
+/* Read Path */
+int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd, int blba,
+		       unsigned long *read_bitmap, int bio_init_idx,
+		       struct bio **bio);
+#endif /* CONFIG_NVM_PBLK_RAIL */
 
 typedef int (pblk_map_page_fn)(struct pblk *pblk, unsigned int sentry,
 			       struct ppa_addr *ppa_list,
