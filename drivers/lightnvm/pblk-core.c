@@ -114,6 +114,12 @@ static void pblk_end_io_erase(struct nvm_rq *rqd)
 {
 	struct pblk *pblk = rqd->private;
 
+	if (pblk->rail.stride_width) {
+		struct ppa_addr *ppa_list = nvm_rq_to_ppa_list(rqd);
+
+		pblk_up_chunk(pblk, ppa_list[0]);
+	}
+
 	__pblk_end_io_erase(pblk, rqd);
 	mempool_free(rqd, &pblk->e_rq_pool);
 }
@@ -957,7 +963,11 @@ static int pblk_blk_erase_sync(struct pblk *pblk, struct ppa_addr ppa)
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
 	 */
-	ret = pblk_submit_io_sync(pblk, &rqd);
+	if (pblk->rail.stride_width)
+		ret = pblk_submit_io_sync_sem(pblk, &rqd);
+	else
+		ret = pblk_submit_io_sync(pblk, &rqd);
+
 	rqd.private = pblk;
 	__pblk_end_io_erase(pblk, &rqd);
 
@@ -1079,6 +1089,7 @@ static int pblk_line_init_metadata(struct pblk *pblk, struct pblk_line *line,
 	/* Start metadata */
 	smeta_buf->seq_nr = cpu_to_le64(line->seq_nr);
 	smeta_buf->window_wr_lun = cpu_to_le32(geo->all_luns);
+	smeta_buf->rail_stride_width = cpu_to_le32(line->rail_stride_width);
 
 	/* Fill metadata among lines */
 	if (cur) {
@@ -1456,6 +1467,7 @@ struct pblk_line *pblk_line_get_first_data(struct pblk *pblk)
 
 	line->seq_nr = l_mg->d_seq_nr++;
 	line->type = PBLK_LINETYPE_DATA;
+	line->rail_stride_width = pblk_rail_stride_width(pblk);
 	l_mg->data_line = line;
 
 	pblk_line_setup_metadata(line, l_mg, &pblk->lm);
@@ -1473,6 +1485,8 @@ struct pblk_line *pblk_line_get_first_data(struct pblk *pblk)
 	} else {
 		l_mg->data_next->seq_nr = l_mg->d_seq_nr++;
 		l_mg->data_next->type = PBLK_LINETYPE_DATA;
+		l_mg->data_next->rail_stride_width =
+		  pblk_rail_stride_width(pblk);
 	}
 	spin_unlock(&l_mg->free_lock);
 
@@ -1681,6 +1695,8 @@ retry_setup:
 	} else {
 		l_mg->data_next->seq_nr = l_mg->d_seq_nr++;
 		l_mg->data_next->type = PBLK_LINETYPE_DATA;
+		l_mg->data_next->rail_stride_width =
+		  pblk_rail_stride_width(pblk);
 	}
 	spin_unlock(&l_mg->free_lock);
 
@@ -1772,7 +1788,11 @@ int pblk_blk_erase_async(struct pblk *pblk, struct ppa_addr ppa)
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
 	 */
-	err = pblk_submit_io(pblk, rqd);
+	if (pblk->rail.stride_width)
+		err = pblk_submit_io_sem(pblk, rqd);
+	else
+		err = pblk_submit_io(pblk, rqd);
+
 	if (err) {
 		struct nvm_tgt_dev *dev = pblk->dev;
 		struct nvm_geo *geo = &dev->geo;
@@ -1956,8 +1976,13 @@ static void __pblk_down_chunk(struct pblk *pblk, int pos)
 	 * Only send one inflight I/O per LUN. Since we map at a page
 	 * granurality, all ppas in the I/O will map to the same LUN
 	 */
+	if (pblk->rail.stride_width) {
+		(void)rlun;
+		ret = pblk_rail_down_stride(pblk, pos, msecs_to_jiffies(30000));
+	} else {
+		ret = down_timeout(&rlun->wr_sem, msecs_to_jiffies(30000));
+	}
 
-	ret = down_timeout(&rlun->wr_sem, msecs_to_jiffies(30000));
 	if (ret == -ETIME || ret == -EINTR)
 		pblk_err(pblk, "taking lun semaphore timed out: err %d\n",
 				-ret);
@@ -1996,7 +2021,11 @@ void pblk_up_chunk(struct pblk *pblk, struct ppa_addr ppa)
 	int pos = pblk_ppa_to_pos(geo, ppa);
 
 	rlun = &pblk->luns[pos];
-	up(&rlun->wr_sem);
+
+	if (pblk->rail.stride_width)
+		pblk_rail_up_stride(pblk, pos);
+	else
+		up(&rlun->wr_sem);
 }
 
 void pblk_up_rq(struct pblk *pblk, unsigned long *lun_bitmap)
@@ -2009,7 +2038,11 @@ void pblk_up_rq(struct pblk *pblk, unsigned long *lun_bitmap)
 
 	while ((bit = find_next_bit(lun_bitmap, num_lun, bit + 1)) < num_lun) {
 		rlun = &pblk->luns[bit];
-		up(&rlun->wr_sem);
+
+		if (pblk->rail.stride_width)
+			pblk_rail_up_stride(pblk, bit);
+		else
+			up(&rlun->wr_sem);
 	}
 }
 

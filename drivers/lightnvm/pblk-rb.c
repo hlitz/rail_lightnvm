@@ -404,6 +404,7 @@ static int pblk_rb_flush_point_set(struct pblk_rb *rb, struct bio *bio,
 static int __pblk_rb_may_write(struct pblk_rb *rb, unsigned int nr_entries,
 			       unsigned int *pos)
 {
+	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 	unsigned int mem;
 	unsigned int sync;
 	unsigned int threshold;
