@@ -472,6 +472,10 @@ static inline bool pblk_valid_meta_ppa(struct pblk *pblk,
 				test_bit(pos_opt, data_line->blk_bitmap))
 		return true;
 
+	if (pblk_rail_stride_width(pblk) &&
+	    unlikely(pblk_rail_meta_distance(pblk, data_line)))
+		data_line->meta_distance--;
+
 	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)))
 		data_line->meta_distance--;
 
@@ -575,6 +579,9 @@ static int pblk_submit_write(struct pblk *pblk, int *secs_left)
 	unsigned int resubmit;
 
 	*secs_left = 0;
+
+	if (pblk_rail_stride_width(pblk))
+		pblk_rail_submit_write(pblk);
 
 	spin_lock(&pblk->resubmit_lock);
 	resubmit = !list_empty(&pblk->resubmit_list);

@@ -88,9 +88,15 @@ static int pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 		 * lock or memory barrier.
 		 */
 		if (i < valid_secs) {
-			pblk_map_sec(pblk, line, sentry + i, &meta_list[i],
-				     &lba_list[paddr], ppa_list[i], paddr, i,
-				     valid_secs);
+			if (pblk_rail_stride_width(pblk))
+				pblk_rail_map_sec(pblk, line, sentry + i,
+						  &meta_list[i],
+						  &lba_list[paddr], ppa_list[i],
+						  paddr, i, valid_secs);
+			else
+				pblk_map_sec(pblk, line, sentry + i,
+					     &meta_list[i], &lba_list[paddr],
+					     ppa_list[i], paddr, i, valid_secs);
 		} else {
 			lba_list[paddr] = meta_list[i].lba = addr_empty;
 			__pblk_map_invalidate(pblk, line, paddr);

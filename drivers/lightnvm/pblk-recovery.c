@@ -63,7 +63,8 @@ static int pblk_recov_l2p_from_emeta(struct pblk *pblk, struct pblk_line *line)
 		if (test_bit(pos, line->blk_bitmap))
 			continue;
 
-		if (le64_to_cpu(lba_list[i]) == ADDR_EMPTY) {
+		if (le64_to_cpu(lba_list[i]) == ADDR_EMPTY ||
+		    pblk_rail_lun_is_parity(pblk, line, pos)) {
 			spin_lock(&line->lock);
 			if (test_and_set_bit(i, line->invalid_bitmap))
 				WARN_ONCE(1, "pblk: rec. double invalidate:\n");
@@ -703,6 +704,10 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 		line->id = le32_to_cpu(smeta_buf->header.id);
 		line->type = le16_to_cpu(smeta_buf->header.type);
 		line->seq_nr = le64_to_cpu(smeta_buf->seq_nr);
+		line->rail_stride_width =
+		  le32_to_cpu(smeta_buf->rail_stride_width);
+		pblk->rail.stride_width = line->rail_stride_width;
+
 		spin_unlock(&line->lock);
 
 		/* Update general metadata */
@@ -812,6 +817,8 @@ next:
 		if (l_mg->data_next) {
 			l_mg->data_next->seq_nr = l_mg->d_seq_nr++;
 			l_mg->data_next->type = PBLK_LINETYPE_DATA;
+			l_mg->data_next->rail_stride_width =
+			  pblk->rail.stride_width;
 			is_next = 1;
 		}
 		spin_unlock(&l_mg->free_lock);
