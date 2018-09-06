@@ -1119,6 +1119,9 @@ static void pblk_tear_down(struct pblk *pblk, bool graceful)
 		__pblk_pipeline_flush(pblk);
 	__pblk_pipeline_stop(pblk);
 	pblk_writer_stop(pblk);
+
+	pblk_rail_free(pblk);
+
 	pblk_rb_sync_l2p(&pblk->rwb);
 	pblk_rl_free(&pblk->rl);
 
@@ -1237,6 +1240,10 @@ static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk,
 		goto fail_stop_writer;
 	}
 
+	ret = pblk_rail_init(pblk);
+	if (ret)
+		goto fail_free_gc;
+
 	/* inherit the size from the underlying device */
 	blk_queue_logical_block_size(tqueue, queue_physical_block_size(bqueue));
 	blk_queue_max_hw_sectors(tqueue, queue_max_hw_sectors(bqueue));
@@ -1260,6 +1267,8 @@ static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk,
 
 	return pblk;
 
+fail_free_gc:
+	pblk_gc_exit(pblk, false);
 fail_stop_writer:
 	pblk_writer_stop(pblk);
 fail_free_l2p:

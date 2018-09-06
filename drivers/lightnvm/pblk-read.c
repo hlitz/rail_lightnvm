@@ -462,6 +462,15 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		return NVM_IO_DONE;
 	}
 
+	if (pblk_rail_stride_width(pblk)) {
+		ret = pblk_rail_read_bio(pblk, rqd, blba, read_bitmap,
+					 bio_init_idx, &bio);
+		if (ret == NVM_IO_OK)
+			return ret;
+		if (ret == NVM_IO_ERR)
+			goto fail_end_io;
+	}
+
 	/* All sectors are to be read from the device */
 	if (bitmap_empty(read_bitmap, rqd->nr_ppas)) {
 		struct bio *int_bio = NULL;
