@@ -35,6 +35,16 @@ config NVM_PBLK_DEBUG
 	  vocal error messages, and extra tracking fields in the pblk sysfs
 	  entries.
 
+config NVM_PBLK_RAIL
+       bool "Pblk RAIL Support"
+       default n
+       help
+         Enables RAIL for pblk. RAIL enforces tail read latency guarantees by
+	 eliminiating reads being serialized behind writes to the same LUN.
+	 RAIL partitions LUNs into strides and enforces that only one LUN per
+	 stride is written at a time. Reads can bypass busy LUNs by recompting
+	 requested data using parity redundancy.
+
 endif # NVM_PBLK_DEBUG
 
 endif # NVM

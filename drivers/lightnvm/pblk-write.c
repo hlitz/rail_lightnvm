@@ -469,6 +469,11 @@ static inline bool pblk_valid_meta_ppa(struct pblk *pblk,
 				test_bit(pos_opt, data_line->blk_bitmap))
 		return true;
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	if (unlikely(pblk_rail_meta_distance(data_line)))
+		data_line->meta_distance--;
+#endif
+
 	if (unlikely(pblk_ppa_comp(ppa_opt, ppa)))
 		data_line->meta_distance--;
 
@@ -570,6 +575,10 @@ static int pblk_submit_write(struct pblk *pblk)
 	unsigned int secs_to_flush;
 	unsigned long pos;
 	unsigned int resubmit;
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	pblk_rail_submit_write(pblk);
+#endif
 
 	spin_lock(&pblk->resubmit_lock);
 	resubmit = !list_empty(&pblk->resubmit_list);

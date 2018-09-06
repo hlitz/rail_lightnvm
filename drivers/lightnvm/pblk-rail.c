@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2018 Heiner Litz
  * Initial release: Heiner Litz <hlitz@ucsc.edu>
