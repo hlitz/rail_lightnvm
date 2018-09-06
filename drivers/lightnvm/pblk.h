@@ -757,6 +757,8 @@ struct pblk {
 	struct pblk_gc gc;
 
 	pblk_map_page_fn *map_page;
+
+	struct pblk_rail rail;
 };
 
 struct pblk_line_ws {
