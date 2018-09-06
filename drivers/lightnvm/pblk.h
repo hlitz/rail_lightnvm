@@ -758,6 +758,11 @@ struct pblk {
 	struct pblk_gc gc;
 
 	pblk_map_page_fn *map_page;
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	struct pblk_rail rail;
+#endif
+
 };
 
 struct pblk_line_ws {

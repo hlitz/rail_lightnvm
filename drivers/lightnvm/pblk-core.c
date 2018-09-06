@@ -113,6 +113,12 @@ static void pblk_end_io_erase(struct nvm_rq *rqd)
 {
 	struct pblk *pblk = rqd->private;
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	struct ppa_addr *ppa_list = nvm_rq_to_ppa_list(rqd);
+
+	pblk_up_chunk(pblk, ppa_list[0]);
+#endif
+
 	__pblk_end_io_erase(pblk, rqd);
 	mempool_free(rqd, &pblk->e_rq_pool);
 }
@@ -940,7 +946,11 @@ static int pblk_blk_erase_sync(struct pblk *pblk, struct ppa_addr ppa)
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
 	 */
+#ifdef CONFIG_NVM_PBLK_RAIL
+	ret = pblk_submit_io_sync_sem(pblk, &rqd);
+#else
 	ret = pblk_submit_io_sync(pblk, &rqd);
+#endif
 	rqd.private = pblk;
 	__pblk_end_io_erase(pblk, &rqd);
 
@@ -1754,7 +1764,11 @@ int pblk_blk_erase_async(struct pblk *pblk, struct ppa_addr ppa)
 	/* The write thread schedules erases so that it minimizes disturbances
 	 * with writes. Thus, there is no need to take the LUN semaphore.
 	 */
+#ifdef CONFIG_NVM_PBLK_RAIL
+	err = pblk_submit_io_sem(pblk, rqd);
+#else
 	err = pblk_submit_io(pblk, rqd);
+#endif
 	if (err) {
 		struct nvm_tgt_dev *dev = pblk->dev;
 		struct nvm_geo *geo = &dev->geo;
@@ -1909,6 +1923,10 @@ void pblk_line_close_ws(struct work_struct *work)
 	if (w_err_gc->has_write_err)
 		pblk_save_lba_list(pblk, line);
 
+#ifdef CONFIG_NVM_PBLK_RAIL
+	pblk_rail_line_close(pblk, line);
+#endif
+
 	pblk_line_close(pblk, line);
 	mempool_free(line_ws, &pblk->gen_ws_pool);
 }
@@ -1938,8 +1956,12 @@ static void __pblk_down_chunk(struct pblk *pblk, int pos)
 	 * Only send one inflight I/O per LUN. Since we map at a page
 	 * granurality, all ppas in the I/O will map to the same LUN
 	 */
-
+#ifdef CONFIG_NVM_PBLK_RAIL
+	(void)rlun;
+	ret = pblk_rail_down_stride(pblk, pos, msecs_to_jiffies(30000));
+#else
 	ret = down_timeout(&rlun->wr_sem, msecs_to_jiffies(30000));
+#endif
 	if (ret == -ETIME || ret == -EINTR)
 		pblk_err(pblk, "taking lun semaphore timed out: err %d\n",
 				-ret);
@@ -1978,7 +2000,13 @@ void pblk_up_chunk(struct pblk *pblk, struct ppa_addr ppa)
 	int pos = pblk_ppa_to_pos(geo, ppa);
 
 	rlun = &pblk->luns[pos];
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+	pblk_rail_up_stride(pblk, pos);
+#else
 	up(&rlun->wr_sem);
+#endif
+
 }
 
 void pblk_up_rq(struct pblk *pblk, unsigned long *lun_bitmap)
@@ -1991,7 +2019,13 @@ void pblk_up_rq(struct pblk *pblk, unsigned long *lun_bitmap)
 
 	while ((bit = find_next_bit(lun_bitmap, num_lun, bit + 1)) < num_lun) {
 		rlun = &pblk->luns[bit];
+
+#ifdef CONFIG_NVM_PBLK_RAIL
+		pblk_rail_up_stride(pblk, bit);
+#else
 		up(&rlun->wr_sem);
+#endif
+
 	}
 }
 
