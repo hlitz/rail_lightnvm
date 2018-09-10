@@ -177,6 +177,16 @@ void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd, bool put_line)
 	struct bio *int_bio = rqd->bio;
 	unsigned long start_time = r_ctx->start_time;
 
+	struct timeval t;
+
+	static long reg_rr = 0, rr = 0;
+	do_gettimeofday(&t);
+	if ((t.tv_sec > r_ctx->timeval.tv_sec && t.tv_usec > 1000)||
+	    t.tv_usec > r_ctx->timeval.tv_usec + 1000) {
+	  printk(KERN_EMERG "tsart diff %lu reads %lu reg %lu\n",  t.tv_usec - r_ctx->timeval.tv_usec , rr++, reg_rr);
+	  
+	}
+	reg_rr++;
 	generic_end_io_acct(dev->q, READ, &pblk->disk->part0, start_time);
 
 	if (rqd->error)
@@ -444,7 +454,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	r_ctx->start_time = jiffies;
 	r_ctx->lba = blba;
 	r_ctx->private = bio; /* original bio */
-
+       do_gettimeofday(&r_ctx->timeval);
 	/* Save the index for this bio's start. This is needed in case
 	 * we need to fill a partial read.
 	 */

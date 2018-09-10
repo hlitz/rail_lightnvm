@@ -120,7 +120,10 @@ int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
 	struct nvm_geo *geo = &dev->geo;
 	int lun_pos = pblk_ppa_to_pos(geo, ppa);
 
-	return test_bit(lun_pos, pblk->rail.busy_bitmap);
+	//int busy = test_bit(lun_pos, pblk->rail.busy_bitmap);
+	//if (!busy)
+	  
+		return test_bit(lun_pos, pblk->rail.busy_bitmap);
 }
 
 /* Enforces one writer per stride */
@@ -612,6 +615,16 @@ static void pblk_rail_end_io_read(struct nvm_rq *rqd)
 	void *src_p, *dst_p;
 	int i, r, rail_ppa = 0;
 	unsigned char valid;
+
+	struct timeval t;
+	static long reg_rr = 0, rr = 0;
+	do_gettimeofday(&t);
+	if ((t.tv_sec > r_ctx->timeval.tv_sec && t.tv_usec > 1000)||
+	    t.tv_usec > r_ctx->timeval.tv_usec + 1000) {
+	  printk(KERN_EMERG "RAIL tsart diff %lu reads %lu reg %lu\n",  t.tv_usec - r_ctx->timeval.tv_usec , rr++, reg_rr);
+	  
+	}
+	reg_rr++;
 
 	if (unlikely(rqd->nr_ppas == 1)) {
 		struct ppa_addr ppa;

@@ -121,6 +121,7 @@ struct pblk_g_ctx {
 	void *private;
 	unsigned long start_time;
 	u64 lba;
+  struct timeval timeval;
 };
 
 #ifdef CONFIG_NVM_PBLK_RAIL
