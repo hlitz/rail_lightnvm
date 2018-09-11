@@ -835,6 +835,10 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd, int blba,
 	pr_ctx = r_ctx->private;
 	bitmap_copy(pr_ctx->bitmap, pvalid, PR_BITMAP_SIZE);
 
+	for(i=0; i< nr_rail_ppas; i++)
+	  if(pblk_rail_lun_busy(pblk, rail_ppa_list[i]))
+	     print_ppa(pblk, &rail_ppa_list[i], "before submit railwrite luns busy", i);
+
 	ret = pblk_submit_io(pblk, rqd);
 	if (ret) {
 		bio_put(rqd->bio);
@@ -845,6 +849,8 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd, int blba,
 		__pblk_end_io_read(pblk, rqd, false);
 		return NVM_IO_ERR;
 	}
-
+	for(i=0; i< nr_rail_ppas; i++)
+	  if(pblk_rail_lun_busy(pblk, rail_ppa_list[i]))
+	     print_ppa(pblk, &rail_ppa_list[i], "railwrite luns busy", i);
 	return NVM_IO_OK;
 }
