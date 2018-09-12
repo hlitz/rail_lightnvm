@@ -85,6 +85,7 @@ int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
 	struct nvm_geo *geo = &dev->geo;
 	int lun_pos = pblk_ppa_to_pos(geo, ppa);
 
+	return smp_load_acquire(&pblk->luns[lun_pos].wr_sem.count) == 0;
 	return test_bit(lun_pos, pblk->rail.busy_bitmap);
 }
 
@@ -95,11 +96,38 @@ int pblk_rail_down_stride(struct pblk *pblk, int lun_pos, int timeout)
 	int strides = pblk_rail_nr_parity_luns(pblk);
 	int stride = lun_pos % strides;
 	int ret;
-
-	rlun = &pblk->luns[stride];
+	int i;
+	rlun = &pblk->luns[lun_pos];
 	ret = down_timeout(&rlun->wr_sem, timeout);
-	pblk_rail_notify_reader_down(pblk, lun_pos);
-
+	//pblk_rail_notify_reader_down(pblk, lun_pos);
+	for (i = 0; i < 4; i++) {
+	  unsigned int neighbor;
+	  unsigned int strides = pblk_rail_nr_parity_luns(pblk);
+	  
+	  neighbor = pblk_rail_wrap_lun(pblk, lun_pos + i * strides);
+	  
+	    if (neighbor == lun_pos)
+	      continue;
+	    /* Javier: This is the clean version. However we do not really need to
+	     * obtain the sema, a load_aquire is sufficient - please advise
+	     * Also, in theory it should be sufficient to check only the previous
+	     * lun in the stride as luns are always obtained sequentially */
+	    /*if (smp_load_acquire(&pblk->luns[neighbor].wr_sem.count) == 0) {
+	      busy++;
+	      }*/
+	    ret = down_timeout(&pblk->luns[neighbor].wr_sem, msecs_to_jiffies(30000));
+	    if (ret) {
+	      switch (ret) {
+	      case -ETIME:
+		pr_err("pblk rail: stride semaphore timed out\n");
+		return 1;
+	      case -EINTR:
+		pr_err("pblk rail: stride semaphore timed out\n");
+		return 1;
+	      }
+	    }
+	    up(&pblk->luns[neighbor].wr_sem);
+	}
 	return ret;
 }
 
@@ -109,8 +137,8 @@ void pblk_rail_up_stride(struct pblk *pblk, int lun_pos)
 	int strides = pblk_rail_nr_parity_luns(pblk);
 	int stride = lun_pos % strides;
 
-	pblk_rail_notify_reader_up(pblk, lun_pos);
-	rlun = &pblk->luns[stride];
+	//pblk_rail_notify_reader_up(pblk, lun_pos);
+	rlun = &pblk->luns[lun_pos];
 	up(&rlun->wr_sem);
 }
 
