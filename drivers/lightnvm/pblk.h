@@ -625,6 +625,7 @@ struct pblk_rail {
 	void **data;                    /* Buffer that holds parity pages */
 	DECLARE_BITMAP(busy_bitmap, PBLK_MAX_LUNS_BITMAP);
 	u64 *lba;                       /* Buffer to compute LBA parity */
+  atomic_t read_lock[PBLK_MAX_LUNS_BITMAP];
 };
 
 /* Initialize and tear down RAIL */

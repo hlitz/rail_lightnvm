@@ -85,12 +85,14 @@ int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
 	struct nvm_geo *geo = &dev->geo;
 	int lun_pos = pblk_ppa_to_pos(geo, ppa);
 	int ret;
-	ret = down_trylock(&pblk->luns[lun_pos].wr_sem);
+	//ret = down_trylock(&pblk->luns[lun_pos].wr_sem);
 	//if (!ret)
 	//	  up(&pblk->luns[lun_pos].wr_sem);
-	return ret;
-	return smp_load_acquire(&pblk->luns[lun_pos].wr_sem.count) == 0;
-	return test_bit(lun_pos, pblk->rail.busy_bitmap);
+	//return ret;
+	//return smp_load_acquire(&pblk->luns[lun_pos].wr_sem.count) == 0;
+	ret = test_bit(lun_pos, pblk->rail.busy_bitmap);
+	if (!ret)
+	  atomic_inc(&pblk->rail.read_lock[lun_pos]);
 }
 
 /* Enforces one writer per stride */
@@ -103,7 +105,7 @@ int pblk_rail_down_stride(struct pblk *pblk, int lun_pos, int timeout)
 	int i;
 	rlun = &pblk->luns[lun_pos];
 	ret = down_timeout(&rlun->wr_sem, timeout);
-	//pblk_rail_notify_reader_down(pblk, lun_pos);
+	pblk_rail_notify_reader_down(pblk, lun_pos);
 	for (i = 0; i < 4; i++) {
 	  unsigned int neighbor;
 	  unsigned int strides = pblk_rail_nr_parity_luns(pblk);
@@ -132,6 +134,8 @@ int pblk_rail_down_stride(struct pblk *pblk, int lun_pos, int timeout)
 	    }
 	    up(&pblk->luns[neighbor].wr_sem);
 	}
+
+	while(atomic_read(&pblk->rail.read_lock[lun_pos]) > 0) {}
 	return ret;
 }
 
@@ -141,7 +145,7 @@ void pblk_rail_up_stride(struct pblk *pblk, int lun_pos)
 	int strides = pblk_rail_nr_parity_luns(pblk);
 	int stride = lun_pos % strides;
 
-	//pblk_rail_notify_reader_up(pblk, lun_pos);
+	pblk_rail_notify_reader_up(pblk, lun_pos);
 	rlun = &pblk->luns[lun_pos];
 	up(&rlun->wr_sem);
 }
@@ -362,7 +366,8 @@ int pblk_rail_init(struct pblk *pblk)
 		PBLK_RAIL_STRIDE_WIDTH;
 
 	pblk->map_page = pblk_rail_map_page_data;
-
+	for(i = 0; i < 128; i++)
+	  atomic_set(&pblk->rail.read_lock[i], 0);
 	return 0;
 
 free_pages:
@@ -834,8 +839,8 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd, int blba,
 		  struct nvm_tgt_dev *dev = pblk->dev;
 		  struct nvm_geo *geo = &dev->geo;
 		  int lun_pos = pblk_ppa_to_pos(geo, rail_ppa_list[0]);
-		  
-		  up(&pblk->luns[lun_pos].wr_sem);
+		  atomic_dec(&pblk->rail.read_lock[lun_pos]);		  
+		  //up(&pblk->luns[lun_pos].wr_sem);
 		}
 		return NVM_IO_OK;
 	}
@@ -868,8 +873,9 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd, int blba,
 		  struct nvm_tgt_dev *dev = pblk->dev;
 		  struct nvm_geo *geo = &dev->geo;
 		  int lun_pos = pblk_ppa_to_pos(geo, rail_ppa_list[0]);
-		  
-		  up(&pblk->luns[lun_pos].wr_sem);
+
+		  atomic_dec(&pblk->rail.read_lock[lun_pos]);
+		  //		  up(&pblk->luns[lun_pos].wr_sem);
 		}
 
 	return NVM_IO_OK;
