@@ -86,8 +86,8 @@ int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
 	int lun_pos = pblk_ppa_to_pos(geo, ppa);
 	int ret;
 	ret = down_trylock(&pblk->luns[lun_pos].wr_sem);
-	if (!ret)
-	  up(&pblk->luns[lun_pos].wr_sem);
+	//if (!ret)
+	//	  up(&pblk->luns[lun_pos].wr_sem);
 	return ret;
 	return smp_load_acquire(&pblk->luns[lun_pos].wr_sem.count) == 0;
 	return test_bit(lun_pos, pblk->rail.busy_bitmap);
@@ -812,8 +812,36 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd, int blba,
 		       nr_rail_ppas * sizeof(struct ppa_addr));
 	}
 
-	if (bitmap_empty(read_bitmap, rqd->nr_ppas))
-		return NVM_IO_REQUEUE;
+	/* All sectors are to be read from the device */
+	if (bitmap_empty(read_bitmap, rqd->nr_ppas)) {
+		struct bio *int_bio = NULL;
+
+		/* Clone read bio to deal with read errors internally */
+		int_bio = bio_clone_fast(*bio, GFP_KERNEL, &pblk_bio_set);
+		if (!int_bio) {
+			pblk_err(pblk, "could not clone read bio\n");
+			//goto fail_end_io;
+		}
+
+		rqd->bio = int_bio;
+
+		if (pblk_submit_io(pblk, rqd)) {
+			pblk_err(pblk, "read IO submission failed\n");
+			ret = NVM_IO_ERR;
+			//goto fail_end_io;
+		}
+		{
+		  struct nvm_tgt_dev *dev = pblk->dev;
+		  struct nvm_geo *geo = &dev->geo;
+		  int lun_pos = pblk_ppa_to_pos(geo, rail_ppa_list[0]);
+		  
+		  up(&pblk->luns[lun_pos].wr_sem);
+		}
+		return NVM_IO_OK;
+	}
+
+	//if (bitmap_empty(read_bitmap, rqd->nr_ppas))
+	//	return NVM_IO_REQUEUE;
 
 	if (read_empty && !bitmap_empty(read_bitmap, rqd->nr_ppas))
 		bio_advance(*bio, (rqd->nr_ppas) * PBLK_EXPOSED_PAGE_SIZE);
@@ -836,6 +864,13 @@ int pblk_rail_read_bio(struct pblk *pblk, struct nvm_rq *rqd, int blba,
 		__pblk_end_io_read(pblk, rqd, false);
 		return NVM_IO_ERR;
 	}
+		{
+		  struct nvm_tgt_dev *dev = pblk->dev;
+		  struct nvm_geo *geo = &dev->geo;
+		  int lun_pos = pblk_ppa_to_pos(geo, rail_ppa_list[0]);
+		  
+		  up(&pblk->luns[lun_pos].wr_sem);
+		}
 
 	return NVM_IO_OK;
 }
