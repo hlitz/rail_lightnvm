@@ -84,7 +84,11 @@ int pblk_rail_lun_busy(struct pblk *pblk, struct ppa_addr ppa)
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	int lun_pos = pblk_ppa_to_pos(geo, ppa);
-
+	int ret;
+	ret = down_trylock(&pblk->luns[lun_pos].wr_sem);
+	if (!ret)
+	  up(&pblk->luns[lun_pos].wr_sem);
+	return ret;
 	return smp_load_acquire(&pblk->luns[lun_pos].wr_sem.count) == 0;
 	return test_bit(lun_pos, pblk->rail.busy_bitmap);
 }
