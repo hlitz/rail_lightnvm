@@ -26,7 +26,7 @@
  */
 static int pblk_read_from_cache(struct pblk *pblk, struct bio *bio,
 				sector_t lba, struct ppa_addr ppa,
-				int bio_iter, bool advanced_bio)
+				int bio_iter)
 {
 #ifdef CONFIG_NVM_PBLK_DEBUG
 	/* Callers must ensure that the ppa points to a cache address */
@@ -34,8 +34,7 @@ static int pblk_read_from_cache(struct pblk *pblk, struct bio *bio,
 	BUG_ON(!pblk_addr_in_cache(ppa));
 #endif
 
-	return pblk_rb_copy_to_bio(&pblk->rwb, bio, lba, ppa,
-						bio_iter, advanced_bio);
+	return pblk_rb_copy_to_bio(&pblk->rwb, bio, lba, ppa, bio_iter);
 }
 
 static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
@@ -45,7 +44,6 @@ static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
 	struct ppa_addr ppas[NVM_MAX_VLBA];
 	int nr_secs = rqd->nr_ppas;
-	bool advanced_bio = false;
 	int i, j = 0;
 
 	pblk_lookup_l2p_seq(pblk, ppas, blba, nr_secs);
@@ -58,27 +56,19 @@ retry:
 		if (pblk_ppa_empty(p)) {
 			WARN_ON(test_and_set_bit(i, read_bitmap));
 			meta_list[i].lba = cpu_to_le64(ADDR_EMPTY);
-
-			if (unlikely(!advanced_bio)) {
-				bio_advance(bio, (i) * PBLK_EXPOSED_PAGE_SIZE);
-				advanced_bio = true;
-			}
-
-			goto next;
+			continue;
 		}
 
 		/* Try to read from write buffer. The address is later checked
 		 * on the write buffer to prevent retrieving overwritten data.
 		 */
 		if (pblk_addr_in_cache(p)) {
-			if (!pblk_read_from_cache(pblk, bio, lba, p, i,
-								advanced_bio)) {
+			if (!pblk_read_from_cache(pblk, bio, lba, p, i)) {
 				pblk_lookup_l2p_seq(pblk, &p, lba, 1);
 				goto retry;
 			}
 			WARN_ON(test_and_set_bit(i, read_bitmap));
 			meta_list[i].lba = cpu_to_le64(lba);
-			advanced_bio = true;
 #ifdef CONFIG_NVM_PBLK_DEBUG
 			atomic_long_inc(&pblk->cache_reads);
 #endif
@@ -86,10 +76,6 @@ retry:
 			/* Read from media non-cached sectors */
 			rqd->ppa_list[j++] = p;
 		}
-
-next:
-		if (advanced_bio)
-			bio_advance(bio, PBLK_EXPOSED_PAGE_SIZE);
 	}
 
 	if (pblk_io_aligned(pblk, nr_secs))
@@ -226,6 +212,8 @@ static void pblk_end_partial_read(struct nvm_rq *rqd)
 	__le64 *lba_list_mem, *lba_list_media;
 	void *src_p, *dst_p;
 	int hole, i;
+
+	bio_advance(bio, nr_secs * PBLK_EXPOSED_PAGE_SIZE);
 
 	if (unlikely(nr_holes == 1)) {
 		struct ppa_addr ppa;
@@ -402,7 +390,7 @@ retry:
 	 * write buffer to prevent retrieving overwritten data.
 	 */
 	if (pblk_addr_in_cache(ppa)) {
-		if (!pblk_read_from_cache(pblk, bio, lba, ppa, 0, 1)) {
+		if (!pblk_read_from_cache(pblk, bio, lba, ppa, 0)) {
 			pblk_lookup_l2p_seq(pblk, &ppa, lba, 1);
 			goto retry;
 		}
@@ -469,6 +457,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	}
 
 	if (bitmap_full(read_bitmap, nr_secs)) {
+		bio_advance(bio, nr_secs * PBLK_EXPOSED_PAGE_SIZE);
 		atomic_inc(&pblk->inflight_io);
 		__pblk_end_io_read(pblk, rqd, false);
 		return NVM_IO_DONE;
