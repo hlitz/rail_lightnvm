@@ -349,6 +349,7 @@ struct nvm_geo {
 	int all_chunks;		/* across channels */
 
 	int op;			/* over-provision in instance */
+	int rail_stride_width;  /* zero disables RAIL */
 
 	sector_t total_secs;	/* across channels */
 

@@ -79,7 +79,8 @@ struct nvm_ioctl_create_extended {
 	__u16 lun_begin;
 	__u16 lun_end;
 	__u16 op;
-	__u16 rsv;
+	__u8 rail_stride_width;
+	__u8 rsv;
 };
 
 enum {
