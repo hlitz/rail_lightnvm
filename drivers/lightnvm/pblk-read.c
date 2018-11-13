@@ -275,6 +275,7 @@ static void pblk_end_partial_read(struct nvm_rq *rqd)
 	} while (hole < nr_secs);
 
 	bio_put(new_bio);
+	kfree(pr_ctx->bitmap);
 	kfree(pr_ctx);
 
 	/* restore original request */
@@ -314,6 +315,11 @@ int pblk_setup_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
 	if (!pr_ctx)
 		goto fail_free_pages;
 
+	pr_ctx->bitmap = kmalloc_array(BITS_TO_LONGS(NVM_MAX_VLBA),
+				       sizeof(unsigned long), GFP_KERNEL);
+	if (!pr_ctx->bitmap)
+		goto fail_free_pr_ctx;
+
 	for (i = 0; i < nr_secs; i++)
 		lba_list_mem[i] = meta_list[i].lba;
 
@@ -337,6 +343,8 @@ int pblk_setup_partial_read(struct pblk *pblk, struct nvm_rq *rqd,
 	}
 	return 0;
 
+fail_free_pr_ctx:
+	kfree(pr_ctx);
 fail_free_pages:
 	pblk_bio_free_pages(pblk, new_bio, 0, new_bio->bi_vcnt);
 fail_bio_put:
