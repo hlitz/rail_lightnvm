@@ -1416,6 +1416,7 @@ static struct pblk_line *pblk_line_retry(struct pblk *pblk,
 					 struct pblk_line *line)
 {
 	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
+	struct pblk_line_meta *lm = &pblk->lm;
 	struct pblk_line *retry_line;
 
 retry:
@@ -1428,7 +1429,9 @@ retry:
 	}
 
 	retry_line->map_bitmap = line->map_bitmap;
+	bitmap_zero(retry_line->map_bitmap, lm->sec_per_line);
 	retry_line->invalid_bitmap = line->invalid_bitmap;
+	bitmap_zero(retry_line->invalid_bitmap, lm->sec_per_line);
 	retry_line->smeta = line->smeta;
 	retry_line->emeta = line->emeta;
 	retry_line->meta_line = line->meta_line;
